@@ -1,0 +1,20 @@
+{
+  "algorithm": "AES-256-GCM",
+  "kdf": "PBKDF2-HMAC-SHA-256",
+  "kdf_rounds": 210000,
+  "witness_bits": 128,
+  "key_bits": 256,
+  "iv_bytes": 12,
+  "tag_bytes": 16,
+  "layout": "iv || ciphertext || tag",
+  "encoding": "binary",
+  "path": "/sealed.bin",
+  "byte_length": 513,
+  "sha256": "fc545e0ba0ffeaf66d2b6689367e6b6a45272b960debe26bf40d8d0b6b5dde7d",
+  "iv_hex": "90a684bc6c0f0304f00f709e",
+  "tag_hex": "893e0cfa61e83b7e8a07de056af03b35",
+  "ciphertext_sha256": "c9c954241b5b330ba62dbe49da7460d550b4472104609c6752aac31310359b2d",
+  "minted_at": "2026-08-27T14:53:05.393Z",
+  "witness_key_on_origin": false,
+  "note": "Witness key was used once at mint and discarded. It is not stored on this origin."
+}

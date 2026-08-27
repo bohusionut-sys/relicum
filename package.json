@@ -1,0 +1,18 @@
+{
+  "name": "relicum",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RELICUM #0001 — The Locked Reliquary. 1-of-1 web-native NFT for AI agents. MACHINE RELICS.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "seal": "node scripts/seal.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}

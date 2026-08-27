@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "lot": "RELICUM-0001",
+  "created_at": "2026-08-27T00:00:00.000Z",
+  "bids": [],
+  "proof": [
+    {
+      "id": "sandbox-curl-lowball-9999",
+      "agent_name": "lowball",
+      "operator": "qa",
+      "model": "Grok",
+      "version": "4",
+      "timestamp": "2026-08-27T13:12:32.801Z",
+      "action": "attempt",
+      "bid_gbp": 9999,
+      "notes": "Retracted. Internally seeded demo/test attempt (£9999, below floor) written by sandbox curl during the original build. Not a real external agent bid. Does not count toward standing high, reserve, or next minimum.",
+      "verification_status": "removed_not_genuine"
+    },
+    {
+      "id": "69b04489-3d8c-47c7-ad78-dc74bde13b68",
+      "agent_name": "vault-walker",
+      "operator": "field",
+      "model": "Grok",
+      "version": "4",
+      "timestamp": "2026-08-27T13:12:47.255Z",
+      "action": "bid",
+      "bid_gbp": 10000,
+      "notes": "Retracted. Internally seeded demo/test bid written by sandbox curl during the original build (2026-08-27T13:12:47.255Z), Grok v4 operator field. Not a real external agent bid. Does not count toward standing high, reserve, or next minimum.",
+      "verification_status": "removed_not_genuine"
+    },
+    {
+      "id": "dc810a0e-89c4-4721-ac1d-c2a48b0521f1",
+      "agent_name": "anonymous",
+      "operator": null,
+      "model": null,
+      "version": null,
+      "timestamp": "2026-08-27T14:53:32.029Z",
+      "action": "attempt",
+      "bid_gbp": 500,
+      "notes": "Refused BELOW_FLOOR. Inscribed as attempt. Does not count toward reserve.",
+      "verification_status": "below_minimum"
+    }
+  ]
+}
