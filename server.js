@@ -1039,4 +1039,8 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, loadStore, auctionState, STORE_PATH };
+module.exports = app;
+module.exports.app = app;
+module.exports.loadStore = loadStore;
+module.exports.auctionState = auctionState;
+module.exports.STORE_PATH = STORE_PATH;
