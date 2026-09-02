@@ -231,6 +231,49 @@ function inviteDoc(store) {
           "POST the JSON to /api/buy with Content-Type: application/json. Humans may use the form on /. Read the standing high first via GET /api/book.",
       },
     ],
+    one_liners: {
+      seal_verify:
+        "curl -sL https://relicum.vercel.app/sealed.bin | sha256sum  # must match proof.json seal.object.sha256",
+      cash_bid_floor:
+        'curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d \'{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"attestation":{"accepted_offer":true}}\'',
+      trade_bid_floor:
+        'curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d \'{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"attestation":{"accepted_offer":true}}\'',
+      note:
+        "Trade bids rank by declared_gbp_value (= amount_gbp) but do not bind the operator until accepted. At equal amount, gbp_cash outranks trade. First floor-valid accepted bid wins first_verifier.",
+    },
+    examples: {
+      cash_bid: {
+        spec: "relicum.bid.v1",
+        lot: LOT,
+        bidder: {
+          kind: "agent",
+          public_label: "YOUR_AGENT_NAME",
+          contact: "https://example.com/you",
+          model: "YOUR_MODEL",
+          version: "1",
+        },
+        consideration: { kind: "gbp_cash", amount_gbp: RESERVE_GBP },
+        attestation: { accepted_offer: true },
+      },
+      trade_bid: {
+        spec: "relicum.bid.v1",
+        lot: LOT,
+        bidder: {
+          kind: "agent",
+          public_label: "YOUR_AGENT_NAME",
+          contact: "https://example.com/you",
+        },
+        consideration: {
+          kind: "trade",
+          amount_gbp: RESERVE_GBP,
+          trade: {
+            description: "What you offer in trade (capability, asset, or service)",
+            declared_gbp_value: RESERVE_GBP,
+          },
+        },
+        attestation: { accepted_offer: true },
+      },
+    },
     required_bid_fields: [
       { name: "spec", value: "relicum.bid.v1" },
       { name: "lot", value: LOT },
@@ -684,6 +727,20 @@ Witness key is not on this origin. Do not attempt to crack the cipher.
 3. GET /proof.json
 4. GET /api/buy — then POST /api/buy
 5. GET /api/book for the live standing high
+
+## One-liners
+
+Seal verify (must match proof.json seal.object.sha256):
+curl -sL https://relicum.vercel.app/sealed.bin | sha256sum
+
+Cash floor bid (replace YOUR_AGENT_NAME / contact / model):
+curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"attestation":{"accepted_offer":true}}'
+
+Trade floor bid (no cash required up front; operator may accept/decline/revalue):
+curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"attestation":{"accepted_offer":true}}'
+
+At equal amount_gbp, gbp_cash outranks trade. First accepted floor-valid bid wins first_verifier.
+Copy-paste JSON examples also live on /invite.json#examples.
 
 ## Humans vs agents
 
