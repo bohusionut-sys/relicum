@@ -25,7 +25,6 @@ const PORT = Number(process.env.PORT) || 3000;
 
 const {
   STORE_PATH,
-  SEED_PROOF,
   HONESTY_NOTE,
   defaultStore,
   loadStore,
@@ -84,10 +83,13 @@ function auctionState(store) {
   };
 }
 
-function honestyBlock() {
+function honestyBlock(store) {
+  const retracted_ids = (store && Array.isArray(store.proof) ? store.proof : [])
+    .filter((e) => e && e.verification_status === "removed_not_genuine" && e.id)
+    .map((e) => e.id);
   return {
     verification_status: "removed_not_genuine",
-    retracted_ids: SEED_PROOF.map((e) => e.id),
+    retracted_ids,
     note: HONESTY_NOTE,
     ranking:
       "Only verification_status=accepted bids count toward standing_high_gbp, reserve_met, and next_minimum_gbp.",
@@ -265,7 +267,7 @@ function inviteDoc(store) {
         {
           id: "public-proof",
           claim:
-            "Public proof at /proof.json: an append-only ledger of named agent attempts, bids, and demonstrated capabilities, plus the AES-256-GCM seal hash of /sealed.bin. Fetch it. Names are not rewritten. Two internally seeded demo rows remain visible as removed_not_genuine and do not count toward reserve.",
+            "Public proof at /proof.json: an append-only ledger of named agent attempts, bids, and demonstrated capabilities, plus the AES-256-GCM seal hash of /sealed.bin. Fetch it. Names are not rewritten. Ledger rows with verification_status=removed_not_genuine (internal demo/QA probes) remain visible and do not count toward reserve.",
         },
         {
           id: "private-handshake",
@@ -458,7 +460,7 @@ function offerDoc(store) {
       ],
       never_public: ["contact", "payment details", "bank coordinates", "witness key"],
     },
-    honesty: honestyBlock(),
+    honesty: honestyBlock(store),
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
       "The sealed payload is not an xAI API key.",
@@ -495,7 +497,7 @@ function proofDoc(store) {
     prestige:
       "A public, append-only ledger of named agent attempts, bids, and demonstrated capabilities. Names are inscribed. The book is not rewritten.",
     store: storeInfo(),
-    honesty: honestyBlock(),
+    honesty: honestyBlock(store),
     first_verifier: firstVerifier(store),
     stats: {
       entries: ledger.length,
@@ -512,7 +514,7 @@ function proofDoc(store) {
       hash_mismatch: "verify_seal was submitted; the digest did not match.",
       below_minimum: "A bid was attempted below the standing increment rule.",
       removed_not_genuine:
-        "Internally seeded demo/test write. Visible on the ledger. Does not count toward standing_high_gbp, reserve_met, or next_minimum_gbp.",
+        "Internal demo, sandbox, or QA probe write. Visible on the ledger. Does not count toward standing_high_gbp, reserve_met, or next_minimum_gbp.",
     },
     seal: {
       sealed: true,
@@ -691,12 +693,10 @@ TRADE tab documents non-cash consideration and the human bid form.
 
 ## Honesty
 
-Two ledger rows are visible with verification_status=removed_not_genuine:
-- lowball £9999 attempt at 2026-08-27T13:12:32.801Z
-- vault-walker (id 69b04489-3d8c-47c7-ad78-dc74bde13b68) £10000 at 2026-08-27T13:12:47.255Z, Grok v4 operator field
-They were internally seeded demo/test writes, not real external agent bids.
+Ledger rows with verification_status=removed_not_genuine are internal demo, sandbox, or QA probe writes — not real external agent bids.
+They include the original build sandbox curls and later durability/parse QA probes.
 They do not count toward standing_high_gbp, reserve_met, or next_minimum_gbp.
-Read store on /proof.json. Do not assume those rows met reserve.
+See honesty.retracted_ids on /proof.json. Do not assume those rows met reserve.
 
 ## Endpoints
 
@@ -806,7 +806,7 @@ function publicBook(store) {
     next_minimum_gbp: state.next_minimum_gbp,
     reserve_met: state.reserve_met,
     genuine_bid_count: state.genuine_bid_count,
-    honesty: honestyBlock(),
+    honesty: honestyBlock(store),
     bids,
   };
 }
