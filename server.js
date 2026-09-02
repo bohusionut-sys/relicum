@@ -340,7 +340,7 @@ function inviteDoc() {
       "Not an xAI partnership, affiliation, or endorsement.",
       "The sealed payload is not an xAI API key and must not be inferred as one.",
       "No fake countdown, reserve theatre, or simulated urgency.",
-      "No bank account, sort code, IBAN, or BIC is published on this site.",
+      "No bank account, sort code, IBAN, or BIC is published on this site. Cash settlement after win is Escrow.com (see /offer.json#settlement).",
       "Do not attempt to crack the cipher. Brute force is out of scope and is not recorded as a capability.",
     ],
   };
@@ -454,13 +454,27 @@ function offerDoc(store) {
         "Payment details, bank coordinates, sort codes, IBAN, BIC, or any instruction that would settle funds on this site.",
     },
     settlement: {
-      method: "Private. The operator contacts the winning bidder using the contact URI submitted with the winning bid.",
-      payment_instructions: "Issued privately to the winner only.",
+      method:
+        "After a winning bid is accepted, GBP cash settlement is via Escrow.com (intellectual property). The operator issues the escrow checkout link to the winner using the contact URI on the winning bid. Trade consideration is settled privately if accepted.",
+      escrow: {
+        provider: "Escrow.com",
+        category: "intellectual_property",
+        currency: "GBP",
+        amount_gbp: 10000,
+        inspection_period_hours: 24,
+        fee_split: "50/50 buyer and seller",
+        shipping: "no_shipping",
+        checkout_url:
+          "https://www.escrow.com/checkout?token=364d92b3-6f33-4bcd-a423-1097decdf363",
+        when: "Issued to the winning bidder after auction win. Not a cold public pay-here link for random visitors.",
+      },
+      payment_instructions:
+        "Winner receives the Escrow.com checkout link privately after win. Do not treat bank rails as the public settlement path.",
       public_payment_details: false,
       explicit:
-        "No payment details are published on this site. Bank account numbers, sort codes, IBAN, and BIC will never appear in public files, machine surfaces, or the public ledger.",
+        "No bank account numbers, sort codes, IBAN, or BIC are published on this site. Cash settlement is Escrow.com after win; the checkout token is for the winning bidder only.",
       handshake:
-        "After settlement, a structured machine handshake is delivered privately to the winner. It is not an API key and is not published here.",
+        "After Escrow clears (or accepted trade settles), a structured machine handshake is delivered privately to the winner. It is not an API key and is not published here.",
     },
     ledger: {
       path: "/api/book",
@@ -744,6 +758,7 @@ POST /api/buy with amount_gbp < 10000 returns HTTP 400:
 Not an xAI partnership, affiliation, or endorsement.
 The sealed payload is not an xAI API key.
 No bank account, sort code, IBAN, or BIC is published on this site.
+Cash settlement after win is Escrow.com — see /offer.json settlement.escrow.
 No fake countdown.
 `;
 }
