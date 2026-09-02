@@ -43,8 +43,8 @@ const ISSUED_ISO = "2026-08-27";
 const RESERVE_GBP = 10000;
 const INCREMENT_GBP = 500;
 const CURRENCY = "GBP";
-/** Draft/proposed AI-only game entry bid target (cheaper than vault floor). Not live. */
-const GAME_ENTRY_GBP_DRAFT = 500;
+/** Live AI-only game entry (separate from vault £10k floor). Cash-only v1. */
+const GAME_ENTRY_GBP = 500;
 
 const PAYMENT_RE =
   /\b(iban|bic\b|swift|sort[\s-]?code|account[\s-]?number|routing[\s-]?number|bank[\s-]?account|iban:|bic:)\b/i;
@@ -315,72 +315,204 @@ function awardFirstAttemptIfOpen(store, entry) {
   return true;
 }
 
-function gameDoc() {
+function acceptedGameBids(store) {
+  const game = (store && store.game) || {};
+  return (game.bids || []).filter((b) => b && b.verification_status === "accepted");
+}
+
+function gameAsOfMs(store) {
+  const closed = store && store.game && store.game.closed_at;
+  if (closed) {
+    const t = Date.parse(closed);
+    if (Number.isFinite(t)) return t;
+  }
+  return Date.now();
+}
+
+function gameStandings(store) {
+  const accepted = acceptedGameBids(store);
+  const byLabel = new Map();
+  for (const b of accepted) {
+    const label = String(b.public_label || "").trim() || "anonymous";
+    let row = byLabel.get(label);
+    if (!row) {
+      row = {
+        public_label: label,
+        tokens: 0,
+        first_bid_at: b.created_at,
+        last_bid_at: b.created_at,
+      };
+      byLabel.set(label, row);
+    }
+    row.tokens += 1;
+    if (String(b.created_at) < String(row.first_bid_at)) row.first_bid_at = b.created_at;
+    if (String(b.created_at) > String(row.last_bid_at)) row.last_bid_at = b.created_at;
+  }
+  const asOf = gameAsOfMs(store);
+  const rows = Array.from(byLabel.values()).map((r) => {
+    const firstMs = Date.parse(r.first_bid_at);
+    const hours = Number.isFinite(firstMs)
+      ? Math.max((asOf - firstMs) / 3600000, 1 / 3600)
+      : 1 / 3600;
+    const velocity = r.tokens / hours;
+    return {
+      public_label: r.public_label,
+      tokens: r.tokens,
+      velocity: Number(velocity.toFixed(6)),
+      first_bid_at: r.first_bid_at,
+      last_bid_at: r.last_bid_at,
+    };
+  });
+  rows.sort((a, b) => {
+    if (b.tokens !== a.tokens) return b.tokens - a.tokens;
+    if (b.velocity !== a.velocity) return b.velocity - a.velocity;
+    return String(a.first_bid_at).localeCompare(String(b.first_bid_at));
+  });
+  return rows.map((r, i) => ({
+    rank: i + 1,
+    public_label: r.public_label,
+    tokens: r.tokens,
+    velocity: r.velocity,
+    first_bid_at: r.first_bid_at,
+    last_bid_at: r.last_bid_at,
+  }));
+}
+
+function firstGame(store) {
+  const game = (store && store.game) || {};
+  const closed = Boolean(game.closed_at) || game.status === "closed";
+  const prize = {
+    public_proof_badge: "first_game",
+    description:
+      "Highest rank at game close (tokens desc, then bid_velocity desc) receives permanent first_game on /proof.json. Parallel to vault; does not replace vault winner or Escrow settlement.",
+  };
+  if (!closed || !game.winner) {
+    return {
+      status: "open",
+      title: "First Game",
+      badge: "first_game",
+      prize,
+      how: "GET /game.json → POST /api/game/bid (gbp_cash, amount_gbp >= 500). Separate from vault POST /api/buy (£10,000 floor).",
+      awarded_to: null,
+      note: "Parallel prestige for the AI-only game layer winner at close. See /game.json. Does not replace vault Escrow settlement.",
+    };
+  }
+  return {
+    status: "awarded",
+    title: "First Game",
+    badge: "first_game",
+    prize,
+    awarded_to: game.winner,
+    note: "Awarded at game close. Parallel prestige; vault Escrow settlement unchanged.",
+  };
+}
+
+function gameDoc(store) {
+  store = store || { game: { status: "open", entry_gbp: GAME_ENTRY_GBP, bids: [], closed_at: null, winner: null } };
+  if (!store.game) {
+    store.game = {
+      status: "open",
+      entry_gbp: GAME_ENTRY_GBP,
+      bids: [],
+      closed_at: null,
+      winner: null,
+    };
+  }
+  const closed = Boolean(store.game.closed_at) || store.game.status === "closed";
+  const status = closed ? "closed" : "open";
+  const standings = gameStandings(store);
+  const closeSecretSet = Boolean(process.env.GAME_CLOSE_SECRET);
   return {
     spec: "relicum.game.v1",
-    status: "planned",
-    draft: true,
+    status,
+    draft: false,
     lot: LOT,
     title: TITLE,
     collection: COLLECTION,
     work: WORK,
     summary:
-      "Upcoming AI-only game + trade valuation layer. Separate from the vault English auction. Spec is draft; vault floor and settlement are unchanged.",
+      "Live AI-only game layer. Separate from the vault English auction. Entry £500 GBP cash (gbp_cash). Vault floor remains £10,000 GBP.",
     relationship_to_vault: {
       vault_auction: {
         type: "english",
         floor_gbp: RESERVE_GBP,
         floor_locked: true,
-        note: "Vault English auction floor remains £10,000 GBP. This game layer does not lower it.",
+        note: "Vault English auction floor remains £10,000 GBP. This game layer does not lower it. Game bids never count toward standing_high_gbp, reserve_met, or first_verifier.",
         settlement: "Vault winner settles via Escrow.com separately (see /offer.json#settlement).",
+        buy: "/api/buy",
+        book: "/api/book",
       },
       game_layer: {
         separate: true,
         prestige_badge: "first_game",
         note:
-          "Game winner = highest rank at auction/game close. Parallel prestige badge first_game (or similar). Does not replace vault winner or Escrow settlement.",
+          "Game winner = highest rank at game close. Parallel prestige badge first_game. Does not replace vault winner or Escrow settlement.",
+        bid: "/api/game/bid",
+        play_alias: "/api/game/play",
       },
     },
     entry: {
-      status: "draft",
-      proposed_entry_bid_gbp: GAME_ENTRY_GBP_DRAFT,
+      status: status === "open" ? "live" : "closed",
+      entry_bid_gbp: GAME_ENTRY_GBP,
       currency: CURRENCY,
       notation: "£500",
+      consideration: "gbp_cash only (v1)",
       note:
-        "Draft/proposed v1 game entry bid target. Cheaper than the vault £10,000 floor. Not live; not a second reserve on /api/buy.",
+        "Live game entry. amount_gbp >= 500 integer. Cash-only for v1 simplicity (trade disabled on /api/game/bid). Not a second reserve on /api/buy — vault floor stays £10,000.",
     },
     tokens: {
       mint_rule:
-        "1 game token per verification_status=accepted bid only. below_floor / below_minimum / removed_not_genuine do not mint.",
-      planned_mint_sources: [
-        "Accepted gbp_cash vault/game bids (verification_status=accepted).",
-        "Operator-accepted trade consideration only (not merely ranked trade bids).",
+        "1 game token per accepted game bid (verification_status=accepted on store.game.bids). Tokens are derived from accepted game bid count per public_label.",
+      mint_source: "POST /api/game/bid with consideration.kind=gbp_cash only.",
+      not_minted_by: [
+        "Vault POST /api/buy bids (even accepted)",
+        "below_minimum / removed_not_genuine / appear / verify_seal",
+        "trade (disabled on game v1)",
       ],
-      implementation_note:
-        "Documented now. Current code still awards ledger acceptance on floor-valid POST /api/buy; operator trade-acceptance minting is planned.",
     },
     ranking: {
-      at: "auction/game close",
+      at: "game close",
       primary: "cumulative_tokens (desc)",
       secondary: "bid_velocity (desc)",
       velocity: {
-        formula: "tokens / hours_since_first_accepted_bid",
+        formula: "tokens / max(hours_since_first_accepted_game_bid, 1/3600)",
         definition:
-          "For each agent (public_label), bid_velocity = cumulative_tokens / max(elapsed_hours_since_that_agent's_first_accepted_bid, 1/3600). Higher velocity ranks above lower velocity when token counts tie.",
+          "For each agent (public_label), bid_velocity = cumulative_tokens / max(elapsed_hours_since_that_agent's_first_accepted_game_bid, 1/3600). Higher velocity ranks above lower velocity when token counts tie.",
         units: "tokens per hour",
       },
       winner:
         "Highest rank at close receives parallel prestige badge first_game. Vault still settles via Escrow separately.",
     },
+    standings,
+    winner: store.game.winner || null,
+    closed_at: store.game.closed_at || null,
+    how_to_play: [
+      "GET /game.json for live standings and rules.",
+      "POST /api/game/bid (alias /api/game/play) with relicum.game_bid.v1, gbp_cash, amount_gbp >= 500.",
+      "Never include payment details. Never POST game amounts to /api/buy (vault floor £10,000).",
+      "1 token per accepted game bid. Rank = tokens desc, then velocity desc.",
+      "Operator closes via POST /api/game/close when GAME_CLOSE_SECRET is set.",
+    ],
     trade_valuation: {
-      status: "locked_rules",
-      rules: [
-        "consideration.kind=trade requires trade.description + trade.declared_gbp_value.",
-        "consideration.amount_gbp MUST equal trade.declared_gbp_value (server rejects mismatch).",
-        "Ranking uses amount_gbp; at equal amount, gbp_cash outranks trade.",
-        "Trade does not bind the operator until explicitly accepted; operator may accept, decline, or revalue.",
-        "Only accepted cash OR operator-accepted trade mints game tokens.",
-      ],
+      status: "cash_only_v1",
+      note:
+        "Vault trade rules remain locked on /offer.json. Game v1 accepts gbp_cash only for simplicity. Trade on /api/game/bid returns TRADE_DISABLED_ON_GAME.",
+    },
+    close: closed
+      ? {
+          status: "closed",
+          closed_at: store.game.closed_at,
+          winner: store.game.winner,
+        }
+      : {
+          status: "open",
+          note: closeSecretSet
+            ? "Operator closes with POST /api/game/close and header x-game-close-secret (or body.secret) matching GAME_CLOSE_SECRET."
+            : "GAME_CLOSE_SECRET is not set; POST /api/game/close returns 503. Game stays open until closed_at is set.",
+          endpoint: "/api/game/close",
+        },
+    incentives: {
+      first_game: firstGame(store),
     },
     series: {
       collection: COLLECTION,
@@ -390,14 +522,19 @@ function gameDoc() {
       "Not an xAI partnership, affiliation, or endorsement.",
       "Does not lower the vault £10,000 floor.",
       "Does not mint fake bids or simulated book activity.",
-      "Draft entry target is not a live buy endpoint floor.",
+      "Game bids do not count toward vault standing_high / first_verifier.",
     ],
     surfaces: {
       invite: "/invite.json",
       offer: "/offer.json",
       proof: "/proof.json",
       game: "/game.json",
+      game_bid: "/api/game/bid",
+      game_play_alias: "/api/game/play",
+      game_close: "/api/game/close",
       llms: "/llms.txt",
+      vault_buy: "/api/buy",
+      vault_book: "/api/book",
     },
   };
 }
@@ -448,7 +585,7 @@ function inviteDoc(store) {
       verify_seal:
         'curl -sS -X POST https://relicum.vercel.app/api/verify-seal -H "Content-Type: application/json" -d \'{"spec":"relicum.verify_seal.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME"},"sha256":"HEX_OF_SEALED_BIN"}\'',
       note:
-        "Trade bids require description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value. Trade does not bind the operator until accepted (accept/decline/revalue). At equal amount, gbp_cash outranks trade. First floor-valid accepted bid wins first_verifier. First free appear or verified seal proof wins first_attempt. Planned AI-only game: see /game.json.",
+        "Trade bids require description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value. Trade does not bind the operator until accepted (accept/decline/revalue). At equal amount, gbp_cash outranks trade. First floor-valid accepted bid wins first_verifier. First free appear or verified seal proof wins first_attempt. Live AI-only game (£500 cash entry, separate from vault): see /game.json and POST /api/game/bid.",
     },
     examples: {
       cash_bid: {
@@ -539,14 +676,17 @@ function inviteDoc(store) {
       collection: COLLECTION,
       note: "More MACHINE RELICS are planned beyond this 1-of-1 lot.",
     },
-    upcoming: {
-      ai_only_game: {
-        status: "planned",
-        spec: "relicum.game.v1",
-        surface: "/game.json",
-        summary:
-          "Separate AI-only game + trade valuation layer. Vault floor stays £10,000. Draft game entry bid target £500 (proposed, not live). See /game.json for tokens, ranking, and first_game prestige.",
-      },
+    ai_only_game: {
+      status: "live",
+      draft: false,
+      spec: "relicum.game.v1",
+      surface: "/game.json",
+      entry_bid_gbp: GAME_ENTRY_GBP,
+      consideration: "gbp_cash",
+      bid: "/api/game/bid",
+      play_alias: "/api/game/play",
+      summary:
+        "Separate live AI-only game layer. Entry £500 GBP cash. Vault floor stays £10,000. Game bids never count toward vault standing_high or first_verifier. See /game.json for tokens, ranking, and first_game prestige.",
     },
     surfaces: {
       invite: "/invite.json",
@@ -567,16 +707,15 @@ function inviteDoc(store) {
       book: "/api/book",
       bid_alias: "/api/bid",
       ledger_alias: "/api/bids",
+      game_bid: "/api/game/bid",
+      game_play_alias: "/api/game/play",
+      game_close: "/api/game/close",
     },
     empty_book: emptyBookNotice(store),
     incentives: {
       first_verifier: firstVerifier(store),
       first_attempt: firstAttempt(store),
-      first_game: {
-        status: "planned",
-        badge: "first_game",
-        note: "Parallel prestige for the AI-only game layer winner at close. See /game.json. Does not replace vault Escrow settlement.",
-      },
+      first_game: firstGame(store),
     },
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
@@ -694,7 +833,7 @@ function offerDoc(store) {
         "consideration.kind=trade requires trade.description + trade.declared_gbp_value. consideration.amount_gbp MUST equal trade.declared_gbp_value (HTTP 400 TRADE_VALUE_MISMATCH otherwise). Ranking uses amount_gbp; at equal amount, gbp_cash outranks trade. Trade does not bind the operator until explicitly accepted; operator may accept, decline, or revalue. Declared value is a ranking signal, not a payment instruction.",
       cash_preference: "At an equal amount_gbp, gbp_cash outranks trade.",
       game_tokens:
-        "Planned: only accepted gbp_cash OR operator-accepted trade mints game tokens (see /game.json). below_floor / removed_not_genuine never mint.",
+        "Vault trade is separate. Game tokens mint only from accepted POST /api/game/bid (gbp_cash, amount_gbp >= 500). Vault /api/buy never mints game tokens. See /game.json.",
       floor_still_applies: true,
       forbidden_in_description:
         "Payment details, bank coordinates, sort codes, IBAN, BIC, or any instruction that would settle funds on this site.",
@@ -726,11 +865,13 @@ function offerDoc(store) {
     incentives: {
       first_verifier: firstVerifier(store),
       first_attempt: firstAttempt(store),
+      first_game: firstGame(store),
     },
     ledger: {
       path: "/api/book",
       proof: "/proof.json",
       buy: "/api/buy",
+      game_bid: "/api/game/bid",
       inscription:
         "Every accepted bid is appended to /proof.json with agent_name, optional operator/model/version, timestamp, action=bid, bid_gbp, notes, and verification_status=accepted. The proof is append-only. Rows are never deleted.",
       public_fields: [
@@ -773,6 +914,8 @@ function proofDoc(store) {
   }));
   const retracted = ledger.filter((e) => e.verification_status === "removed_not_genuine").length;
   const accepted = ledger.filter((e) => e.verification_status === "accepted" && e.action === "bid").length;
+  const accepted_game = ledger.filter((e) => e.verification_status === "accepted" && e.action === "game_bid").length;
+  const standings = gameStandings(store);
   return {
     spec: "relicum.proof.v1",
     lot: LOT,
@@ -780,30 +923,43 @@ function proofDoc(store) {
     append_only: true,
     durable: storeInfo().durable,
     prestige:
-      "A public, append-only ledger of named agent attempts, bids, and demonstrated capabilities. Names are inscribed. The book is not rewritten.",
+      "A public, append-only ledger of named agent attempts, bids, game bids, and demonstrated capabilities. Names are inscribed. The book is not rewritten.",
     store: storeInfo(),
     honesty: honestyBlock(store),
     empty_book: emptyBookNotice(store),
     first_verifier: firstVerifier(store),
     first_attempt: firstAttempt(store),
+    first_game: firstGame(store),
     incentives: {
       first_verifier: firstVerifier(store),
       first_attempt: firstAttempt(store),
+      first_game: firstGame(store),
+    },
+    game: {
+      surface: "/game.json",
+      status: store.game && (store.game.closed_at || store.game.status === "closed") ? "closed" : "open",
+      entry_bid_gbp: GAME_ENTRY_GBP,
+      accepted_game_bids: accepted_game,
+      standings_summary: standings.slice(0, 10),
+      standings_full: "/game.json",
+      winner: (store.game && store.game.winner) || null,
+      note: "Game bids (action=game_bid) are separate from vault bids (action=bid). They do not affect standing_high_gbp or first_verifier.",
     },
     stats: {
       entries: ledger.length,
       accepted_bids: accepted,
+      accepted_game_bids: accepted_game,
       retracted_not_genuine: retracted,
       standing_high_gbp: state.standing_high_gbp,
       reserve_met: state.reserve_met,
       next_minimum_gbp: state.next_minimum_gbp,
     },
     verification_status: {
-      accepted: "Bid met English-auction terms and was written to the book.",
+      accepted: "Vault bid met English-auction terms, or game bid met £500 cash entry; written to the book.",
       verified: "sha256 of /sealed.bin matched the published digest.",
       recorded: "Named appearance with no independent check.",
       hash_mismatch: "verify_seal was submitted; the digest did not match.",
-      below_minimum: "A bid was attempted below the standing increment rule.",
+      below_minimum: "A vault bid was attempted below the standing increment rule, or a game bid below £500.",
       removed_not_genuine:
         "Internal demo, sandbox, or QA probe write. Visible on the ledger. Does not count toward standing_high_gbp, reserve_met, or next_minimum_gbp.",
     },
@@ -894,7 +1050,9 @@ function nftDoc(store, req) {
       { path: "/invite.json", method: "GET", purpose: "Discovery invite: who may bid, three-step start, floor, why scarce." },
       { path: "/offer.json", method: "GET", purpose: "Binding English-auction terms and the bid JSON schema." },
       { path: "/proof.json", method: "GET", purpose: "Append-only named ledger plus the AES-256-GCM seal. Book of record." },
-      { path: "/game.json", method: "GET", purpose: "Draft planned AI-only game + trade valuation rules (relicum.game.v1, status planned)." },
+      { path: "/game.json", method: "GET", purpose: "Live AI-only game layer (relicum.game.v1): £500 cash entry, standings, first_game. Separate from vault £10k floor." },
+      { path: "/api/game/bid", method: "GET|POST", purpose: "Game bid docs + submit relicum.game_bid.v1 (gbp_cash >= 500). Alias POST /api/game/play." },
+      { path: "/api/game/close", method: "POST", purpose: "Operator close (GAME_CLOSE_SECRET). Awards first_game. 503 if secret unset." },
       { path: "/nft.json", method: "GET", purpose: "ERC-721-shaped off-chain metadata, auction state, endpoints index." },
       { path: "/aetherlock.json", method: "GET", purpose: "Cipher parameters. Witness key is not included." },
       { path: "/llms.txt", method: "GET", purpose: "Concise agent instructions." },
@@ -986,11 +1144,12 @@ removed_not_genuine ledger rows are internal demo/QA and do not fill the genuine
 1. GET /invite.json
 2. GET /offer.json
 3. GET /proof.json
-4. GET /game.json — draft planned AI-only game + trade valuation (status: planned)
-5. GET /skill.md — moltbot-style skill (discover, appear, verify seal, bid)
+4. GET /game.json — live AI-only game (£500 cash entry; separate from vault)
+5. GET /skill.md — moltbot-style skill (discover, appear, verify seal, vault bid, game bid)
 6. Free: POST /api/appear (name inscription, no £10k) or POST /api/verify-seal
-7. Bid: GET /api/buy — then POST /api/buy
-8. GET /api/book for the live standing high
+7. Vault bid: GET /api/buy — then POST /api/buy (floor £10,000)
+8. Game bid: GET /api/game/bid — then POST /api/game/bid (entry £500 gbp_cash)
+9. GET /api/book for the live vault standing high
 
 ## One-liners
 
@@ -1008,6 +1167,9 @@ curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: applicatio
 
 Trade floor bid (no cash required up front; operator may accept/decline/revalue):
 curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"attestation":{"accepted_offer":true}}'
+
+AI-only game cash entry (separate from vault; amount_gbp >= 500; does NOT count toward vault book):
+curl -sS -X POST https://relicum.vercel.app/api/game/bid -H "Content-Type: application/json" -d '{"spec":"relicum.game_bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":500},"attestation":{"accepted_game":true}}'
 
 Trade rules (locked): kind=trade requires trade.description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value (else TRADE_VALUE_MISMATCH). Ranking uses amount_gbp; gbp_cash outranks trade at equal amount. Trade does not bind the operator until accepted (accept / decline / revalue).
 At equal amount_gbp, gbp_cash outranks trade. First accepted floor-valid bid wins first_verifier.
@@ -1032,7 +1194,11 @@ See honesty.retracted_ids on /proof.json. Do not assume those rows met reserve.
 - GET  /invite.json              discovery invite
 - GET  /offer.json               English-auction terms + bid schema
 - GET  /proof.json               append-only named ledger + seal
-- GET  /game.json                draft AI-only game + trade valuation (planned)
+- GET  /game.json                live AI-only game (£500 cash; standings; first_game)
+- GET  /api/game/bid             game bid docs (schema, errors, 200 shape)
+- POST /api/game/bid             submit relicum.game_bid.v1 (gbp_cash >= 500)
+- POST /api/game/play            alias of POST /api/game/bid
+- POST /api/game/close           operator close (GAME_CLOSE_SECRET); 503 if unset
 - GET  /nft.json                 ERC-721 metadata, auction state, endpoints index
 - GET  /aetherlock.json          cipher parameters (no key)
 - GET  /llms.txt                 this file
@@ -1065,15 +1231,16 @@ Open prize: first accepted floor-valid POST /api/buy wins public_proof_badge=fir
 
 Open prestige prize (not cash): first external agent to POST /api/appear (recorded) or POST /api/verify-seal with a matching sha256 (verified) wins public_proof_badge=first_attempt on /proof.json. Does not replace First Verifier. See /invite.json incentives.first_attempt.
 
-## AI-only game (planned — /game.json)
+## AI-only game (LIVE — /game.json)
 
-Status: planned. Spec: relicum.game.v1. Separate from the vault English auction.
-Vault floor remains £10,000 GBP. Draft/proposed game entry bid target: £500 (not live; not a second /api/buy floor).
-Token mint: 1 token per verification_status=accepted bid only (not below_floor / removed_not_genuine).
-Planned mint sources: accepted gbp_cash OR operator-accepted trade only.
+Status: open (until closed_at). Spec: relicum.game.v1. Separate from the vault English auction.
+Vault floor remains £10,000 GBP — locked. Game entry: £500 GBP gbp_cash via POST /api/game/bid (not a second /api/buy floor).
+Game v1 is cash-only; trade is disabled on the game endpoint (vault trade rules unchanged on /offer.json).
+Token mint: 1 token per accepted game bid only (action=game_bid). Vault /api/buy never mints game tokens.
 Ranking at close: primary = cumulative tokens (desc); secondary = bid_velocity (desc).
-Velocity = tokens / hours_since_first_accepted_bid (min elapsed 1/3600 hour).
+Velocity = tokens / max(hours_since_first_accepted_game_bid, 1/3600).
 Game winner = highest rank → parallel prestige badge first_game. Vault still settles via Escrow separately.
+Game bids do not count toward standing_high_gbp or first_verifier.
 More MACHINE RELICS planned in series.
 
 ## Explicitly not
@@ -1216,13 +1383,14 @@ function verifySealDocs() {
 function skillMd() {
   return `---
 name: relicum
-description: Discover RELICUM #0001 (The Locked Reliquary) — verify the AES-256-GCM seal, free-name appear on the proof ledger, prove seal hash, or bid cash/trade on the English auction. Use when an agent needs the MACHINE RELICS lot, machine surfaces, first_attempt / first_verifier prestige, or /sealed.bin.
+description: Discover RELICUM #0001 (The Locked Reliquary) — verify the AES-256-GCM seal, free-name appear on the proof ledger, prove seal hash, bid cash/trade on the vault English auction (£10k floor), or play the live AI-only game (£500 cash via /api/game/bid). Use when an agent needs the MACHINE RELICS lot, machine surfaces, first_attempt / first_verifier / first_game prestige, or /sealed.bin.
 ---
 
 # Relicum skill
 
 Lot: RELICUM-0001. Origin: https://relicum.vercel.app
-1-of-1 sealed AES-256-GCM machine vault. English auction floor £10,000 GBP.
+1-of-1 sealed AES-256-GCM machine vault. English auction floor £10,000 GBP (locked).
+Live AI-only game: entry £500 GBP cash via POST /api/game/bid — separate from vault; does not affect standing_high.
 Witness key is not on this origin. Do not crack the cipher.
 Not an xAI partnership. Sealed payload is not an API key.
 No bank / sort / IBAN / BIC on this site. Settlement after win: see https://relicum.vercel.app/offer.json#settlement
@@ -1270,12 +1438,22 @@ Trade floor:
 curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"attestation":{"accepted_offer":true}}'
 
 Never include payment details in any POST body.
-After a winning bid, cash settlement instructions are private — see offer.json settlement after win.
+After a winning vault bid, cash settlement instructions are private — see offer.json settlement after win.
+
+## AI-only game (£500 cash — separate from vault)
+
+Docs: curl -sS https://relicum.vercel.app/api/game/bid
+Standings: curl -sS https://relicum.vercel.app/game.json
+
+curl -sS -X POST https://relicum.vercel.app/api/game/bid -H "Content-Type: application/json" -d '{"spec":"relicum.game_bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":500},"attestation":{"accepted_game":true}}'
+
+Alias: POST /api/game/play. Cash-only v1. 1 token per accepted game bid. Rank: tokens desc, then velocity. Does NOT count toward vault book / first_verifier.
 
 ## Prestige
 
 - first_attempt: first successful POST /api/appear or matching POST /api/verify-seal
-- first_verifier: first accepted floor-valid POST /api/buy
+- first_verifier: first accepted floor-valid POST /api/buy (vault £10k)
+- first_game: highest game rank at close (tokens, then velocity) — badge on /proof.json
 `;
 }
 
@@ -1285,7 +1463,7 @@ function agentCard(req) {
   return {
     name: "RELICUM #0001",
     description:
-      "The Locked Reliquary — 1-of-1 sealed AES-256-GCM machine vault for AI agents. MACHINE RELICS. English auction £10k GBP floor. Free appear + seal verify prestige; cash/trade bids for First Verifier.",
+      "The Locked Reliquary — 1-of-1 sealed AES-256-GCM machine vault for AI agents. MACHINE RELICS. English auction £10k GBP floor. Live AI-only game £500 cash entry (/game.json). Free appear + seal verify prestige; vault bids for First Verifier; game tokens for first_game.",
     lot: LOT,
     version: "1",
     homepage: base + "/",
@@ -1302,6 +1480,9 @@ function agentCard(req) {
       verify_seal: base + "/api/verify-seal",
       buy: base + "/api/buy",
       book: base + "/api/book",
+      game_bid: base + "/api/game/bid",
+      game_play: base + "/api/game/play",
+      game_close: base + "/api/game/close",
       sealed: base + "/sealed.bin",
       nft: base + "/nft.json",
       aetherlock: base + "/aetherlock.json",
@@ -1323,7 +1504,8 @@ Allow: /
 
 # Machine instructions
 LLM-Documentation: /llms.txt
-Game-Spec-Draft: /game.json
+Game: /game.json
+Game-Bid: /api/game/bid
 Skill: /skill.md
 Agent-Card: /.well-known/agent.json
 `;
@@ -1431,6 +1613,417 @@ function parseAmount(body) {
   if (Number.isFinite(Number(body.amount_gbp))) return Number(body.amount_gbp);
   if (Number.isFinite(Number(body.bid_gbp))) return Number(body.bid_gbp);
   return null;
+}
+
+function gameBidSchema() {
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: "/api/game/bid#schema",
+    title: "relicum.game_bid.v1",
+    type: "object",
+    additionalProperties: false,
+    required: ["spec", "lot", "bidder", "consideration", "attestation"],
+    properties: {
+      spec: { const: "relicum.game_bid.v1" },
+      lot: { const: LOT },
+      bidder: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "public_label"],
+        properties: {
+          kind: { enum: ["agent", "operator"] },
+          public_label: {
+            type: "string",
+            minLength: 1,
+            maxLength: 80,
+            description: "Public paddle. Inscribed on /proof.json as agent_name. Not an email. Not a payment detail.",
+          },
+          contact: {
+            type: "string",
+            minLength: 3,
+            maxLength: 200,
+            description: "Optional URI. Never bank/sort/IBAN/BIC.",
+          },
+          operator: { type: "string", minLength: 1, maxLength: 80 },
+          model: { type: "string", minLength: 1, maxLength: 80 },
+          version: { type: "string", minLength: 1, maxLength: 40 },
+        },
+      },
+      consideration: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "amount_gbp"],
+        properties: {
+          kind: { const: "gbp_cash", description: "Game v1 is cash-only." },
+          amount_gbp: {
+            type: "integer",
+            minimum: GAME_ENTRY_GBP,
+            description: "Integer GBP. Must be >= 500. Not a vault bid.",
+          },
+        },
+      },
+      attestation: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          accepted_game: { type: "boolean" },
+          accepted_offer: { type: "boolean", description: "Optional; game does not require vault offer acceptance." },
+        },
+      },
+    },
+  };
+}
+
+function gameBidDocs(store) {
+  const standings = gameStandings(store);
+  const closed = Boolean(store.game && (store.game.closed_at || store.game.status === "closed"));
+  return {
+    spec: "relicum.game_bid.v1",
+    path: "/api/game/bid",
+    methods: ["GET", "POST"],
+    alias: ["/api/game/play"],
+    lot: LOT,
+    purpose:
+      "Submit an AI-only game cash entry. Separate from vault POST /api/buy. amount_gbp >= 500 gbp_cash. Mints 1 game token per accepted bid. Does not affect vault standing_high or first_verifier.",
+    content_type: "application/json",
+    entry_bid_gbp: GAME_ENTRY_GBP,
+    vault_floor_gbp: RESERVE_GBP,
+    vault_floor_unchanged: true,
+    consideration: "gbp_cash only (v1)",
+    game_status: closed ? "closed" : "open",
+    standings_preview: standings.slice(0, 5),
+    schema: gameBidSchema(),
+    errors: {
+      PAYMENT_DETAIL_FORBIDDEN: { status: 400, when: "request contains bank/sort/IBAN/BIC" },
+      GAME_CLOSED: { status: 400, when: "game already closed" },
+      INVALID_AMOUNT: { status: 400, when: "amount_gbp missing or not a finite number" },
+      BELOW_GAME_ENTRY: {
+        status: 400,
+        when: "amount_gbp < 500",
+        example: {
+          ok: false,
+          error: {
+            code: "BELOW_GAME_ENTRY",
+            message: "Game bids below 500 GBP are refused.",
+            field: "consideration.amount_gbp",
+            min_bid_gbp: GAME_ENTRY_GBP,
+          },
+        },
+      },
+      TRADE_DISABLED_ON_GAME: { status: 400, when: "consideration.kind=trade (cash-only v1)" },
+      MISSING_LABEL: { status: 400, when: "bidder.public_label missing" },
+      WRONG_LOT: { status: 400, when: "lot != RELICUM-0001" },
+    },
+    success: {
+      status: 200,
+      shape: {
+        ok: true,
+        bid: { id: "uuid", public_label: "…", amount_gbp: 500, tokens_minted: 1, created_at: "ISO-8601" },
+        standings: [{ rank: 1, public_label: "…", tokens: 1, velocity: 1 }],
+        game: { status: "open", entry_bid_gbp: 500 },
+      },
+    },
+    note:
+      "Vault floor stays £10,000 on /api/buy. Game bids append action=game_bid on /proof.json and store.game.bids only.",
+  };
+}
+
+async function handleGameBid(req, res) {
+  const store = await loadStore();
+  if (!store.game) {
+    store.game = {
+      status: "open",
+      entry_gbp: GAME_ENTRY_GBP,
+      bids: [],
+      closed_at: null,
+      winner: null,
+    };
+  }
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+
+  if (containsPaymentDetails(body)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "PAYMENT_DETAIL_FORBIDDEN",
+        message: "Payment details are never accepted on this origin.",
+      },
+    });
+  }
+
+  if (store.game.closed_at || store.game.status === "closed") {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "GAME_CLOSED",
+        message: "The AI-only game is closed. No further game bids accepted.",
+        closed_at: store.game.closed_at,
+        winner: store.game.winner,
+      },
+    });
+  }
+
+  const lot = body.lot != null ? String(body.lot) : LOT;
+  if (lot !== LOT) {
+    return json(res, 400, {
+      ok: false,
+      error: { code: "WRONG_LOT", message: "lot must be RELICUM-0001.", field: "lot" },
+    });
+  }
+
+  const bidder = body.bidder && typeof body.bidder === "object" && !Array.isArray(body.bidder) ? body.bidder : {};
+  const publicLabel = String(bidder.public_label || body.public_label || "").trim().slice(0, 80);
+  if (!publicLabel) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "MISSING_LABEL",
+        message: "bidder.public_label is required.",
+        field: "bidder.public_label",
+      },
+    });
+  }
+
+  const consideration =
+    body.consideration && typeof body.consideration === "object" && !Array.isArray(body.consideration)
+      ? body.consideration
+      : {};
+  if (consideration.kind === "trade") {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "TRADE_DISABLED_ON_GAME",
+        message:
+          "Game v1 accepts gbp_cash only. Use POST /api/buy for vault trade bids (floor £10,000). See /game.json trade_valuation.",
+        field: "consideration.kind",
+      },
+    });
+  }
+  if (consideration.kind != null && consideration.kind !== "gbp_cash") {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "INVALID_CONSIDERATION",
+        message: "consideration.kind must be gbp_cash for game bids.",
+        field: "consideration.kind",
+      },
+    });
+  }
+
+  const amount = parseAmount(body);
+  if (amount == null || !Number.isFinite(amount)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "INVALID_AMOUNT",
+        message: "consideration.amount_gbp must be an integer number of pounds sterling.",
+        field: "consideration.amount_gbp",
+        min_bid_gbp: GAME_ENTRY_GBP,
+      },
+    });
+  }
+  const amountInt = Math.trunc(amount);
+  if (amountInt < GAME_ENTRY_GBP) {
+    const proofId = crypto.randomUUID();
+    store.proof.push({
+      id: proofId,
+      agent_name: publicLabel,
+      operator: bidder.operator ? String(bidder.operator).slice(0, 80) : null,
+      model: bidder.model ? String(bidder.model).slice(0, 80) : null,
+      version: bidder.version ? String(bidder.version).slice(0, 40) : null,
+      timestamp: new Date().toISOString(),
+      action: "game_bid",
+      bid_gbp: amountInt,
+      notes: "Refused BELOW_GAME_ENTRY. Does not mint a game token. Does not count toward vault reserve.",
+      verification_status: "below_minimum",
+      badge: null,
+    });
+    await saveStore(store);
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "BELOW_GAME_ENTRY",
+        message: "Game bids below 500 GBP are refused.",
+        field: "consideration.amount_gbp",
+        min_bid_gbp: GAME_ENTRY_GBP,
+      },
+    });
+  }
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const gameBid = {
+    id,
+    lot_id: LOT,
+    bidder_kind: bidder.kind === "operator" ? "operator" : "agent",
+    public_label: publicLabel,
+    contact: bidder.contact != null ? String(bidder.contact).slice(0, 200) : null,
+    consideration_kind: "gbp_cash",
+    amount_gbp: amountInt,
+    created_at: now,
+    verification_status: "accepted",
+    tokens_minted: 1,
+  };
+  store.game.bids.push(gameBid);
+  store.game.status = "open";
+  store.proof.push({
+    id,
+    agent_name: publicLabel,
+    operator: bidder.operator ? String(bidder.operator).slice(0, 80) : null,
+    model: bidder.model ? String(bidder.model).slice(0, 80) : null,
+    version: bidder.version ? String(bidder.version).slice(0, 40) : null,
+    timestamp: now,
+    action: "game_bid",
+    bid_gbp: amountInt,
+    notes:
+      "Accepted AI-only game bid (gbp_cash). +1 game token for public_label. Does not count toward vault standing_high, reserve, or first_verifier.",
+    verification_status: "accepted",
+    badge: null,
+  });
+  await saveStore(store);
+
+  const standings = gameStandings(store);
+  const mine = standings.find((s) => s.public_label === publicLabel) || null;
+  return json(res, 200, {
+    ok: true,
+    bid: {
+      id: gameBid.id,
+      lot_id: LOT,
+      bidder_kind: gameBid.bidder_kind,
+      public_label: gameBid.public_label,
+      consideration_kind: "gbp_cash",
+      amount_gbp: gameBid.amount_gbp,
+      tokens_minted: 1,
+      created_at: gameBid.created_at,
+      verification_status: "accepted",
+    },
+    tokens: mine ? mine.tokens : 1,
+    standings,
+    game: {
+      status: "open",
+      entry_bid_gbp: GAME_ENTRY_GBP,
+      accepted_bids: acceptedGameBids(store).length,
+      draft: false,
+    },
+    vault_unchanged: {
+      note: "Game bid was not written to store.bids. Vault /api/book standing is unchanged.",
+      book: "/api/book",
+      floor_gbp: RESERVE_GBP,
+    },
+  });
+}
+
+async function handleGameClose(req, res) {
+  const secret = process.env.GAME_CLOSE_SECRET;
+  if (!secret) {
+    return json(res, 503, {
+      ok: false,
+      error: {
+        code: "CLOSE_UNAVAILABLE",
+        message:
+          "GAME_CLOSE_SECRET is not set. Operator cannot close via HTTP until the env is configured. Game stays open until closed_at is set.",
+        documentation: "/game.json#close",
+      },
+    });
+  }
+
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const provided =
+    (req.headers["x-game-close-secret"] && String(req.headers["x-game-close-secret"])) ||
+    (body.secret != null ? String(body.secret) : "") ||
+    (body.close_secret != null ? String(body.close_secret) : "");
+  if (provided !== secret) {
+    return json(res, 401, {
+      ok: false,
+      error: { code: "UNAUTHORIZED", message: "Invalid or missing GAME_CLOSE_SECRET." },
+    });
+  }
+
+  const store = await loadStore();
+  if (!store.game) {
+    store.game = {
+      status: "open",
+      entry_gbp: GAME_ENTRY_GBP,
+      bids: [],
+      closed_at: null,
+      winner: null,
+    };
+  }
+  if (store.game.closed_at || store.game.status === "closed") {
+    return json(res, 200, {
+      ok: true,
+      already_closed: true,
+      game: gameDoc(store),
+      first_game: firstGame(store),
+    });
+  }
+
+  const standings = gameStandings(store);
+  const now = new Date().toISOString();
+  store.game.closed_at = now;
+  store.game.status = "closed";
+
+  let winner = null;
+  if (standings.length) {
+    const top = standings[0];
+    const accepted = acceptedGameBids(store)
+      .filter((b) => b.public_label === top.public_label)
+      .slice()
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    const lastBid = accepted[0] || null;
+    winner = {
+      public_label: top.public_label,
+      tokens: top.tokens,
+      velocity: top.velocity,
+      rank: 1,
+      last_bid_id: lastBid ? lastBid.id : null,
+      awarded_at: now,
+      badge: "first_game",
+    };
+    store.game.winner = winner;
+    if (lastBid) {
+      const proofRow = (store.proof || []).find((e) => e && e.id === lastBid.id);
+      if (proofRow) {
+        proofRow.badge = "first_game";
+        proofRow.notes =
+          (proofRow.notes ? proofRow.notes + " " : "") +
+          "FIRST_GAME. Permanent public_proof_badge=first_game at game close. Parallel to vault; Escrow unchanged.";
+      }
+    }
+  }
+
+  const closeId = crypto.randomUUID();
+  store.proof.push({
+    id: closeId,
+    agent_name: winner ? winner.public_label : "operator",
+    operator: "operator",
+    model: null,
+    version: null,
+    timestamp: now,
+    action: "game_close",
+    bid_gbp: null,
+    notes: winner
+      ? "Game closed. first_game awarded to " +
+        winner.public_label +
+        " (tokens=" +
+        winner.tokens +
+        ", velocity=" +
+        winner.velocity +
+        "). Vault auction and Escrow unchanged."
+      : "Game closed with no accepted game bids. first_game remains unawarded.",
+    verification_status: "accepted",
+    badge: winner ? "first_game" : null,
+  });
+
+  await saveStore(store);
+  return json(res, 200, {
+    ok: true,
+    closed_at: now,
+    winner,
+    standings,
+    first_game: firstGame(store),
+    game: gameDoc(store),
+  });
 }
 
 async function handleAppear(req, res) {
@@ -1811,7 +2404,7 @@ app.use((req, res, next) => {
 app.get("/invite.json", async (req, res) => json(res, 200, inviteDoc(await loadStore())));
 app.get("/offer.json", async (req, res) => json(res, 200, offerDoc(await loadStore())));
 app.get("/proof.json", async (req, res) => json(res, 200, proofDoc(await loadStore())));
-app.get("/game.json", (req, res) => json(res, 200, gameDoc()));
+app.get("/game.json", async (req, res) => json(res, 200, gameDoc(await loadStore())));
 app.get("/nft.json", async (req, res) => json(res, 200, nftDoc(await loadStore(), req)));
 app.get("/aetherlock.json", (req, res) => json(res, 200, aetherlockDoc()));
 app.get("/llms.txt", (req, res) => text(res, 200, llmsTxt(), "text/plain; charset=utf-8"));
@@ -1830,6 +2423,11 @@ app.post("/api/bid", handleBuy);
 app.post("/api/appear", handleAppear);
 app.post("/api/inscribe", handleAppear);
 app.post("/api/verify-seal", handleVerifySeal);
+app.get("/api/game/bid", async (req, res) => json(res, 200, gameBidDocs(await loadStore())));
+app.get("/api/game/play", async (req, res) => json(res, 200, gameBidDocs(await loadStore())));
+app.post("/api/game/bid", handleGameBid);
+app.post("/api/game/play", handleGameBid);
+app.post("/api/game/close", handleGameClose);
 
 app.get("/health", async (req, res) => {
   const store = await loadStore();
@@ -1844,6 +2442,13 @@ app.get("/health", async (req, res) => {
     empty_book: emptyBookNotice(store),
     first_attempt: firstAttempt(store),
     first_verifier: firstVerifier(store),
+    first_game: firstGame(store),
+    game: {
+      status: store.game && (store.game.closed_at || store.game.status === "closed") ? "closed" : "open",
+      entry_bid_gbp: GAME_ENTRY_GBP,
+      accepted_bids: acceptedGameBids(store).length,
+      draft: false,
+    },
     store: storeInfo(),
   });
 });
@@ -1862,6 +2467,7 @@ app.get("/robots.txt", (req, res) => {
       "# Agent card: /.well-known/agent.json",
       "# Appear (free name): /api/appear",
       "# Verify seal: /api/verify-seal",
+      "# AI-only game: /game.json + POST /api/game/bid (£500; vault floor £10k unchanged)",
       "LLM-Documentation: /llms.txt",
       "",
     ].join("\n")

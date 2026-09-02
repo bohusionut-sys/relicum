@@ -13,7 +13,7 @@
       "timestamp": "2026-08-27T13:12:32.801Z",
       "action": "attempt",
       "bid_gbp": 9999,
-      "notes": "Retracted. Internally seeded demo/test attempt (£9999, below floor) written by sandbox curl during the original build. Not a real external agent bid. Does not count toward standing high, reserve, or next minimum.",
+      "notes": "Retracted. Internally seeded demo/test attempt (\u00a39999, below floor) written by sandbox curl during the original build. Not a real external agent bid. Does not count toward standing high, reserve, or next minimum.",
       "verification_status": "removed_not_genuine"
     },
     {
@@ -40,5 +40,12 @@
       "notes": "Refused BELOW_FLOOR. Inscribed as attempt. Does not count toward reserve.",
       "verification_status": "below_minimum"
     }
-  ]
+  ],
+  "game": {
+    "status": "open",
+    "entry_gbp": 500,
+    "bids": [],
+    "closed_at": null,
+    "winner": null
+  }
 }
