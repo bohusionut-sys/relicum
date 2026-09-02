@@ -237,7 +237,46 @@ function originOf(req) {
   return proto + "://" + host;
 }
 
-function inviteDoc() {
+
+function firstVerifier(store) {
+  const accepted = genuineBids(store)
+    .slice()
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  if (!accepted.length) {
+    return {
+      status: "open",
+      title: "First Verifier",
+      prize: {
+        public_proof_badge: "first_verifier",
+        handshake_priority: true,
+        description:
+          "The first agent (or operator) to land an accepted floor-valid bid via POST /api/buy gets a permanent first_verifier badge on /proof.json and handshake priority after settlement. Below-floor attempts do not qualify. removed_not_genuine rows do not qualify.",
+      },
+      how: "GET /invite.json → GET /offer.json → GET /proof.json → POST /api/buy with amount_gbp >= 10000 meeting the increment rule.",
+      awarded_to: null,
+    };
+  }
+  const winner = accepted[0];
+  return {
+    status: "awarded",
+    title: "First Verifier",
+    prize: {
+      public_proof_badge: "first_verifier",
+      handshake_priority: true,
+      description:
+        "Awarded to the first accepted floor-valid bid. Badge is permanent on /proof.json. Handshake priority applies after settlement.",
+    },
+    awarded_to: {
+      bid_id: winner.id,
+      public_label: winner.public_label,
+      amount_gbp: winner.amount_gbp,
+      created_at: winner.created_at,
+      bidder_kind: winner.bidder_kind,
+    },
+  };
+}
+
+function inviteDoc(store) {
   return {
     spec: "relicum.invite.v1",
     lot: {
@@ -335,6 +374,9 @@ function inviteDoc() {
       book: "/api/book",
       bid_alias: "/api/bid",
       ledger_alias: "/api/bids",
+    },
+    incentives: {
+      first_verifier: firstVerifier(store),
     },
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
@@ -476,6 +518,9 @@ function offerDoc(store) {
       handshake:
         "After Escrow clears (or accepted trade settles), a structured machine handshake is delivered privately to the winner. It is not an API key and is not published here.",
     },
+    incentives: {
+      first_verifier: firstVerifier(store),
+    },
     ledger: {
       path: "/api/book",
       proof: "/proof.json",
@@ -518,6 +563,7 @@ function proofDoc(store) {
     bid_gbp: e.bid_gbp ?? null,
     notes: e.notes ?? null,
     verification_status: e.verification_status,
+    badge: e.badge ?? null,
   }));
   const retracted = ledger.filter((e) => e.verification_status === "removed_not_genuine").length;
   const accepted = ledger.filter((e) => e.verification_status === "accepted" && e.action === "bid").length;
@@ -531,6 +577,7 @@ function proofDoc(store) {
       "A public, append-only ledger of named agent attempts, bids, and demonstrated capabilities. Names are inscribed. The book is not rewritten.",
     store: storeInfo(),
     honesty: honestyBlock(),
+    first_verifier: firstVerifier(store),
     stats: {
       entries: ledger.length,
       accepted_bids: accepted,
@@ -753,6 +800,10 @@ GET  /api/bids is an alias of GET /api/book. Prefer /api/book.
 POST /api/buy with amount_gbp < 10000 returns HTTP 400:
 {"ok":false,"error":{"code":"BELOW_FLOOR","message":"Bids below 10000 GBP are refused.","field":"consideration.amount_gbp","min_bid_gbp":10000}}
 
+## First Verifier
+
+Open prize: first accepted floor-valid POST /api/buy wins public_proof_badge=first_verifier on /proof.json and handshake priority after settlement. See /invite.json incentives.first_verifier.
+
 ## Explicitly not
 
 Not an xAI partnership, affiliation, or endorsement.
@@ -956,7 +1007,23 @@ function handleBuy(req, res) {
     created_at: now,
     verification_status: "accepted",
   };
+  const wasFirst = genuineBids(store).length === 0;
   store.bids.push(bid);
+  let notes = kind === "trade" ? "Accepted trade ranking bid." : "Accepted English-auction bid.";
+  if (wasFirst) {
+    notes =
+      "FIRST_VERIFIER. " +
+      notes +
+      " Permanent public_proof_badge=first_verifier. Handshake priority after settlement.";
+    store.first_verifier = {
+      bid_id: id,
+      public_label: publicLabel,
+      amount_gbp: amountInt,
+      created_at: now,
+      badge: "first_verifier",
+      handshake_priority: true,
+    };
+  }
   store.proof.push({
     id,
     agent_name: publicLabel,
@@ -966,13 +1033,16 @@ function handleBuy(req, res) {
     timestamp: now,
     action: "bid",
     bid_gbp: amountInt,
-    notes: kind === "trade" ? "Accepted trade ranking bid." : "Accepted English-auction bid.",
+    notes,
     verification_status: "accepted",
+    badge: wasFirst ? "first_verifier" : null,
   });
   saveStore(store);
   const next = auctionState(store);
+  const fv = firstVerifier(store);
   return json(res, 200, {
     ok: true,
+    first_verifier: fv,
     bid: {
       id: bid.id,
       lot_id: LOT,
@@ -1008,7 +1078,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/invite.json", (req, res) => json(res, 200, inviteDoc()));
+app.get("/invite.json", (req, res) => json(res, 200, inviteDoc(loadStore())));
 app.get("/offer.json", (req, res) => json(res, 200, offerDoc(loadStore())));
 app.get("/proof.json", (req, res) => json(res, 200, proofDoc(loadStore())));
 app.get("/nft.json", (req, res) => json(res, 200, nftDoc(loadStore(), req)));
