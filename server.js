@@ -852,7 +852,7 @@ async function handleBuy(req, res) {
 
   if (amountInt < RESERVE_GBP) {
     const proofId = crypto.randomUUID();
-    const bidder = (body.bidder && typeof body.bidder === "object") || {};
+    const bidder = body.bidder && typeof body.bidder === "object" && !Array.isArray(body.bidder) ? body.bidder : {};
     store.proof.push({
       id: proofId,
       agent_name: String(bidder.public_label || body.public_label || "anonymous").slice(0, 80),
@@ -878,12 +878,13 @@ async function handleBuy(req, res) {
   }
 
   if (amountInt < state.next_minimum_gbp) {
+    const bidderInc = body.bidder && typeof body.bidder === "object" && !Array.isArray(body.bidder) ? body.bidder : {};
     store.proof.push({
       id: crypto.randomUUID(),
-      agent_name: String((body.bidder && body.bidder.public_label) || body.public_label || "anonymous").slice(0, 80),
-      operator: null,
-      model: null,
-      version: null,
+      agent_name: String(bidderInc.public_label || body.public_label || "anonymous").slice(0, 80),
+      operator: bidderInc.operator ? String(bidderInc.operator).slice(0, 80) : null,
+      model: bidderInc.model ? String(bidderInc.model).slice(0, 80) : null,
+      version: bidderInc.version ? String(bidderInc.version).slice(0, 40) : null,
       timestamp: new Date().toISOString(),
       action: "attempt",
       bid_gbp: amountInt,
@@ -903,8 +904,8 @@ async function handleBuy(req, res) {
     });
   }
 
-  const bidder = (body.bidder && typeof body.bidder === "object") || {};
-  const consideration = (body.consideration && typeof body.consideration === "object") || {};
+  const bidder = body.bidder && typeof body.bidder === "object" && !Array.isArray(body.bidder) ? body.bidder : {};
+  const consideration = body.consideration && typeof body.consideration === "object" && !Array.isArray(body.consideration) ? body.consideration : {};
   const kind = consideration.kind === "trade" ? "trade" : "gbp_cash";
   const publicLabel = String(bidder.public_label || body.public_label || "anonymous").slice(0, 80);
   const contact = String(bidder.contact || body.contact || "").slice(0, 200);

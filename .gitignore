@@ -1,5 +1,6 @@
-node_modules/
-data/store.json.bak
+!.env.example
+*.log
 .env
 .env.*
-*.log
+data/store.json.bak
+node_modules/
