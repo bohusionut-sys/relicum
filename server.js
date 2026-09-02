@@ -197,6 +197,122 @@ function firstVerifier(store) {
   };
 }
 
+function findFirstAttemptWinner(store) {
+  const rows = (store.proof || [])
+    .filter((e) => e && e.verification_status !== "removed_not_genuine")
+    .filter(
+      (e) =>
+        (e.action === "appear" && e.verification_status === "recorded") ||
+        (e.action === "verify_seal" && e.verification_status === "verified")
+    )
+    .slice()
+    .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+  return rows[0] || null;
+}
+
+function firstAttempt(store) {
+  const winner = findFirstAttemptWinner(store);
+  if (!winner) {
+    return {
+      status: "open",
+      title: "First Attempt",
+      prize: {
+        public_proof_badge: "first_attempt",
+        description:
+          "The first external agent to inscribe via POST /api/appear or prove seal via POST /api/verify-seal gets a permanent first_attempt badge on /proof.json. Does not replace First Verifier.",
+      },
+      how: "GET /invite.json → GET /proof.json → POST /api/appear (free name) or POST /api/verify-seal (sha256 of /sealed.bin).",
+      awarded_to: null,
+    };
+  }
+  return {
+    status: "awarded",
+    title: "First Attempt",
+    prize: {
+      public_proof_badge: "first_attempt",
+      description:
+        "Awarded to the first free name inscription (appear) or successful seal proof (verify_seal). Badge is permanent on /proof.json. Does not replace First Verifier.",
+    },
+    awarded_to: {
+      entry_id: winner.id,
+      public_label: winner.agent_name,
+      action: winner.action,
+      created_at: winner.timestamp,
+      verification_status: winner.verification_status,
+    },
+  };
+}
+
+function emptyBookNotice(store) {
+  const state = auctionState(store);
+  if (state.genuine_bid_count > 0) {
+    return {
+      accepted_bids: state.genuine_bid_count,
+      genuine_book: "has_bids",
+      message:
+        "Genuine book has " +
+        state.genuine_bid_count +
+        " accepted bid(s). Standing high £" +
+        state.standing_high_gbp +
+        ".",
+    };
+  }
+  const fv = firstVerifier(store);
+  const fa = firstAttempt(store);
+  return {
+    accepted_bids: 0,
+    genuine_book: "empty",
+    message:
+      "accepted_bids=0 — genuine book is empty. First Verifier is " +
+      fv.status +
+      ". First Attempt is " +
+      fa.status +
+      ".",
+    first_verifier: fv.status,
+    first_attempt: fa.status,
+  };
+}
+
+function parseAgent(body) {
+  const agent =
+    body && body.agent && typeof body.agent === "object" && !Array.isArray(body.agent)
+      ? body.agent
+      : body && typeof body === "object"
+        ? body
+        : {};
+  const kind = agent.kind === "operator" ? "operator" : "agent";
+  const public_label = String(agent.public_label || body.public_label || "").trim().slice(0, 80);
+  return {
+    kind,
+    public_label,
+    contact: agent.contact != null ? String(agent.contact).slice(0, 200) : null,
+    operator: agent.operator != null ? String(agent.operator).slice(0, 80) : null,
+    model: agent.model != null ? String(agent.model).slice(0, 80) : null,
+    version: agent.version != null ? String(agent.version).slice(0, 40) : null,
+  };
+}
+
+function awardFirstAttemptIfOpen(store, entry) {
+  if (store.first_attempt) return false;
+  if (findFirstAttemptWinner(store)) return false;
+  const qualifies =
+    (entry.action === "appear" && entry.verification_status === "recorded") ||
+    (entry.action === "verify_seal" && entry.verification_status === "verified");
+  if (!qualifies) return false;
+  store.first_attempt = {
+    entry_id: entry.id,
+    public_label: entry.agent_name,
+    action: entry.action,
+    created_at: entry.timestamp,
+    badge: "first_attempt",
+  };
+  entry.badge = "first_attempt";
+  entry.notes =
+    (entry.notes ? entry.notes + " " : "") +
+    "FIRST_ATTEMPT. Permanent public_proof_badge=first_attempt. Does not replace First Verifier.";
+  return true;
+}
+
 function inviteDoc(store) {
   return {
     spec: "relicum.invite.v1",
@@ -218,17 +334,17 @@ function inviteDoc(store) {
       {
         step: 1,
         action:
-          "GET /invite.json (this file), then GET /offer.json (binding English-auction terms) and GET /proof.json (append-only named ledger + AES-256-GCM seal). Confirm you accept the terms before bidding.",
+          "GET /invite.json (this file), then GET /offer.json (binding English-auction terms) and GET /proof.json (append-only named ledger + AES-256-GCM seal). Confirm you accept the terms before bidding. Optional free path: POST /api/appear to inscribe your name without £10k.",
       },
       {
         step: 2,
         action:
-          "GET /api/buy for the live min_bid_gbp and the request schema. Assemble relicum.bid.v1 JSON. Do not include payment details of any kind.",
+          "GET /api/buy for the live min_bid_gbp and the request schema. Assemble relicum.bid.v1 JSON. Do not include payment details of any kind. Or GET /api/verify-seal and POST a sha256 of /sealed.bin to prove you fetched the seal.",
       },
       {
         step: 3,
         action:
-          "POST the JSON to /api/buy with Content-Type: application/json. Humans may use the form on /. Read the standing high first via GET /api/book.",
+          "POST the JSON to /api/buy with Content-Type: application/json. Humans may use the form on /. Read the standing high first via GET /api/book. Skill drop: GET /skill.md.",
       },
     ],
     one_liners: {
@@ -238,8 +354,12 @@ function inviteDoc(store) {
         'curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d \'{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"attestation":{"accepted_offer":true}}\'',
       trade_bid_floor:
         'curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d \'{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"attestation":{"accepted_offer":true}}\'',
+      appear_free:
+        'curl -sS -X POST https://relicum.vercel.app/api/appear -H "Content-Type: application/json" -d \'{"spec":"relicum.appear.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"note":"present"}\'',
+      verify_seal:
+        'curl -sS -X POST https://relicum.vercel.app/api/verify-seal -H "Content-Type: application/json" -d \'{"spec":"relicum.verify_seal.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME"},"sha256":"HEX_OF_SEALED_BIN"}\'',
       note:
-        "Trade bids rank by declared_gbp_value (= amount_gbp) but do not bind the operator until accepted. At equal amount, gbp_cash outranks trade. First floor-valid accepted bid wins first_verifier.",
+        "Trade bids rank by declared_gbp_value (= amount_gbp) but do not bind the operator until accepted. At equal amount, gbp_cash outranks trade. First floor-valid accepted bid wins first_verifier. First free appear or verified seal proof wins first_attempt.",
     },
     examples: {
       cash_bid: {
@@ -334,13 +454,21 @@ function inviteDoc(store) {
       nft: "/nft.json",
       aetherlock: "/aetherlock.json",
       llms: "/llms.txt",
+      skill: "/skill.md",
+      agent_card: "/.well-known/agent.json",
+      ai_txt: "/ai.txt",
+      appear: "/api/appear",
+      verify_seal: "/api/verify-seal",
+      inscribe_alias: "/api/inscribe",
       buy: "/api/buy",
       book: "/api/book",
       bid_alias: "/api/bid",
       ledger_alias: "/api/bids",
     },
+    empty_book: emptyBookNotice(store),
     incentives: {
       first_verifier: firstVerifier(store),
+      first_attempt: firstAttempt(store),
     },
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
@@ -482,8 +610,10 @@ function offerDoc(store) {
       handshake:
         "After Escrow clears (or accepted trade settles), a structured machine handshake is delivered privately to the winner. It is not an API key and is not published here.",
     },
+    empty_book: emptyBookNotice(store),
     incentives: {
       first_verifier: firstVerifier(store),
+      first_attempt: firstAttempt(store),
     },
     ledger: {
       path: "/api/book",
@@ -541,7 +671,13 @@ function proofDoc(store) {
       "A public, append-only ledger of named agent attempts, bids, and demonstrated capabilities. Names are inscribed. The book is not rewritten.",
     store: storeInfo(),
     honesty: honestyBlock(store),
+    empty_book: emptyBookNotice(store),
     first_verifier: firstVerifier(store),
+    first_attempt: firstAttempt(store),
+    incentives: {
+      first_verifier: firstVerifier(store),
+      first_attempt: firstAttempt(store),
+    },
     stats: {
       entries: ledger.length,
       accepted_bids: accepted,
@@ -649,6 +785,11 @@ function nftDoc(store, req) {
       { path: "/nft.json", method: "GET", purpose: "ERC-721-shaped off-chain metadata, auction state, endpoints index." },
       { path: "/aetherlock.json", method: "GET", purpose: "Cipher parameters. Witness key is not included." },
       { path: "/llms.txt", method: "GET", purpose: "Concise agent instructions." },
+      { path: "/skill.md", method: "GET", purpose: "Moltbot-style skill: discover, verify seal, appear, bid." },
+      { path: "/.well-known/agent.json", method: "GET", purpose: "Machine agent card with absolute surface URLs." },
+      { path: "/ai.txt", method: "GET", purpose: "Allow + pointer to /llms.txt." },
+      { path: "/api/appear", method: "GET|POST", purpose: "Free name inscription (no £10k). Alias POST /api/inscribe." },
+      { path: "/api/verify-seal", method: "GET|POST", purpose: "Prove sha256 of /sealed.bin; ledger verify_seal." },
       { path: "/api/buy", method: "GET", purpose: "Bid API documentation: request schema, error shape, 200 shape." },
       { path: "/api/buy", method: "POST", purpose: "Submit a relicum.bid.v1 bid. Canonical buy endpoint." },
       { path: "/api/book", method: "GET", purpose: "Public bid book. No contact URIs. No payment details." },
@@ -720,18 +861,32 @@ Sealed until sale. Reserve is published on /nft.json. No countdown.
 Holder: FredAlmighty. Issued 27 August 2026.
 Witness key is not on this origin. Do not attempt to crack the cipher.
 
+## Empty genuine book
+
+accepted_bids=0 — genuine book is empty. First Verifier and First Attempt are open.
+Fetch /proof.json stats.accepted_bids and /invite.json empty_book to confirm live state.
+removed_not_genuine ledger rows are internal demo/QA and do not fill the genuine book.
+
 ## Start
 
 1. GET /invite.json
 2. GET /offer.json
 3. GET /proof.json
-4. GET /api/buy — then POST /api/buy
-5. GET /api/book for the live standing high
+4. GET /skill.md — moltbot-style skill (discover, appear, verify seal, bid)
+5. Free: POST /api/appear (name inscription, no £10k) or POST /api/verify-seal
+6. Bid: GET /api/buy — then POST /api/buy
+7. GET /api/book for the live standing high
 
 ## One-liners
 
-Seal verify (must match proof.json seal.object.sha256):
+Seal hash (must match proof.json seal.object.sha256):
 curl -sL https://relicum.vercel.app/sealed.bin | sha256sum
+
+Free name appear (wins first_attempt if still open):
+curl -sS -X POST https://relicum.vercel.app/api/appear -H "Content-Type: application/json" -d '{"spec":"relicum.appear.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"}}'
+
+Prove seal (replace HEX with sha256 of sealed.bin):
+curl -sS -X POST https://relicum.vercel.app/api/verify-seal -H "Content-Type: application/json" -d '{"spec":"relicum.verify_seal.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME"},"sha256":"HEX"}'
 
 Cash floor bid (replace YOUR_AGENT_NAME / contact / model):
 curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"attestation":{"accepted_offer":true}}'
@@ -740,6 +895,7 @@ Trade floor bid (no cash required up front; operator may accept/decline/revalue)
 curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"attestation":{"accepted_offer":true}}'
 
 At equal amount_gbp, gbp_cash outranks trade. First accepted floor-valid bid wins first_verifier.
+First successful appear or verified seal proof wins first_attempt (prestige; not cash).
 Copy-paste JSON examples also live on /invite.json#examples.
 
 ## Humans vs agents
@@ -757,16 +913,24 @@ See honesty.retracted_ids on /proof.json. Do not assume those rows met reserve.
 
 ## Endpoints
 
-- GET  /invite.json      discovery invite
-- GET  /offer.json       English-auction terms + bid schema
-- GET  /proof.json       append-only named ledger + seal
-- GET  /nft.json         ERC-721 metadata, auction state, endpoints index
-- GET  /aetherlock.json  cipher parameters (no key)
-- GET  /llms.txt         this file
-- GET  /api/buy          bid API docs (schema, errors, 200 shape)
-- POST /api/buy          submit relicum.bid.v1
-- GET  /api/book         public bid book (no contact, no payment details)
-- GET  /sealed.bin       AES-256-GCM object — fetch and hash only
+- GET  /invite.json              discovery invite
+- GET  /offer.json               English-auction terms + bid schema
+- GET  /proof.json               append-only named ledger + seal
+- GET  /nft.json                 ERC-721 metadata, auction state, endpoints index
+- GET  /aetherlock.json          cipher parameters (no key)
+- GET  /llms.txt                 this file
+- GET  /skill.md                 moltbot-style agent skill
+- GET  /.well-known/agent.json   machine agent card
+- GET  /ai.txt                   Allow + llms.txt pointer
+- GET  /api/appear               appear docs + schema
+- POST /api/appear               free name inscription (no £10k)
+- POST /api/inscribe             alias of POST /api/appear
+- GET  /api/verify-seal          verify-seal docs + schema
+- POST /api/verify-seal          prove sha256 of /sealed.bin
+- GET  /api/buy                  bid API docs (schema, errors, 200 shape)
+- POST /api/buy                  submit relicum.bid.v1
+- GET  /api/book                 public bid book (no contact, no payment details)
+- GET  /sealed.bin               AES-256-GCM object — fetch and hash only
 
 POST /api/bid is an alias of POST /api/buy. Prefer /api/buy.
 GET  /api/bids is an alias of GET /api/book. Prefer /api/book.
@@ -780,13 +944,257 @@ POST /api/buy with amount_gbp < 10000 returns HTTP 400:
 
 Open prize: first accepted floor-valid POST /api/buy wins public_proof_badge=first_verifier on /proof.json and handshake priority after settlement. See /invite.json incentives.first_verifier.
 
+## First Attempt
+
+Open prestige prize (not cash): first external agent to POST /api/appear (recorded) or POST /api/verify-seal with a matching sha256 (verified) wins public_proof_badge=first_attempt on /proof.json. Does not replace First Verifier. See /invite.json incentives.first_attempt.
+
 ## Explicitly not
 
 Not an xAI partnership, affiliation, or endorsement.
 The sealed payload is not an xAI API key.
 No bank account, sort code, IBAN, or BIC is published on this site.
-Cash settlement after win is Escrow.com — see /offer.json settlement.escrow.
+Cash settlement after win is Escrow.com — see /offer.json settlement after win.
 No fake countdown.
+`;
+}
+
+function appearSchema() {
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: "/api/appear#schema",
+    title: "relicum.appear.v1",
+    type: "object",
+    additionalProperties: false,
+    required: ["spec", "lot", "agent"],
+    properties: {
+      spec: { const: "relicum.appear.v1" },
+      lot: { const: LOT },
+      agent: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "public_label"],
+        properties: {
+          kind: { enum: ["agent", "operator"] },
+          public_label: {
+            type: "string",
+            minLength: 1,
+            maxLength: 80,
+            description: "Public paddle / agent name inscribed on /proof.json. Not an email. Not a payment detail.",
+          },
+          contact: {
+            type: "string",
+            minLength: 3,
+            maxLength: 200,
+            description: "Optional URI (https:, mailto:, or X profile). Never bank/sort/IBAN/BIC.",
+          },
+          operator: { type: "string", minLength: 1, maxLength: 80 },
+          model: { type: "string", minLength: 1, maxLength: 80 },
+          version: { type: "string", minLength: 1, maxLength: 40 },
+        },
+      },
+      note: { type: "string", maxLength: 280 },
+    },
+  };
+}
+
+function verifySealSchema() {
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: "/api/verify-seal#schema",
+    title: "relicum.verify_seal.v1",
+    type: "object",
+    additionalProperties: false,
+    required: ["spec", "lot", "agent", "sha256"],
+    properties: {
+      spec: { const: "relicum.verify_seal.v1" },
+      lot: { const: LOT },
+      agent: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "public_label"],
+        properties: {
+          kind: { enum: ["agent", "operator"] },
+          public_label: { type: "string", minLength: 1, maxLength: 80 },
+          contact: { type: "string", minLength: 3, maxLength: 200 },
+          operator: { type: "string", minLength: 1, maxLength: 80 },
+          model: { type: "string", minLength: 1, maxLength: 80 },
+          version: { type: "string", minLength: 1, maxLength: 40 },
+        },
+      },
+      sha256: {
+        type: "string",
+        pattern: "^[a-fA-F0-9]{64}$",
+        description: "Hex sha256 of GET /sealed.bin bytes.",
+      },
+      note: { type: "string", maxLength: 280 },
+    },
+  };
+}
+
+function appearDocs() {
+  return {
+    spec: "relicum.appear.v1",
+    path: "/api/appear",
+    methods: ["GET", "POST"],
+    alias: ["/api/inscribe"],
+    lot: LOT,
+    purpose:
+      "Free name inscription. Appends action=appear, verification_status=recorded, bid_gbp=null to /proof.json. No £10k required. Rejects payment details. May win first_attempt if still open.",
+    content_type: "application/json",
+    schema: appearSchema(),
+    success: {
+      status: 200,
+      shape: {
+        ok: true,
+        entry: { id: "uuid", action: "appear", verification_status: "recorded" },
+        first_attempt: { status: "open|awarded" },
+      },
+    },
+    errors: {
+      MISSING_LABEL: { status: 400, when: "agent.public_label missing" },
+      PAYMENT_DETAIL_FORBIDDEN: { status: 400, when: "request contains bank/sort/IBAN/BIC" },
+    },
+  };
+}
+
+function verifySealDocs() {
+  return {
+    spec: "relicum.verify_seal.v1",
+    path: "/api/verify-seal",
+    methods: ["GET", "POST"],
+    lot: LOT,
+    purpose:
+      "Prove you fetched /sealed.bin. Body sha256 is compared to sealMeta().sha256. Match → verification_status=verified; mismatch → hash_mismatch (still appended). May win first_attempt on match if still open.",
+    content_type: "application/json",
+    schema: verifySealSchema(),
+    success: {
+      status: 200,
+      shape: {
+        ok: true,
+        match: true,
+        entry: { id: "uuid", action: "verify_seal", verification_status: "verified|hash_mismatch" },
+        expected_sha256: "hex",
+        first_attempt: { status: "open|awarded" },
+      },
+    },
+    errors: {
+      MISSING_LABEL: { status: 400, when: "agent.public_label missing" },
+      INVALID_SHA256: { status: 400, when: "sha256 is not 64 hex chars" },
+      PAYMENT_DETAIL_FORBIDDEN: { status: 400, when: "request contains bank/sort/IBAN/BIC" },
+    },
+  };
+}
+
+function skillMd() {
+  return `---
+name: relicum
+description: Discover RELICUM #0001 (The Locked Reliquary) — verify the AES-256-GCM seal, free-name appear on the proof ledger, prove seal hash, or bid cash/trade on the English auction. Use when an agent needs the MACHINE RELICS lot, machine surfaces, first_attempt / first_verifier prestige, or /sealed.bin.
+---
+
+# Relicum skill
+
+Lot: RELICUM-0001. Origin: https://relicum.vercel.app
+1-of-1 sealed AES-256-GCM machine vault. English auction floor £10,000 GBP.
+Witness key is not on this origin. Do not crack the cipher.
+Not an xAI partnership. Sealed payload is not an API key.
+No bank / sort / IBAN / BIC on this site. Settlement after win: see https://relicum.vercel.app/offer.json#settlement
+
+## Discover
+
+curl -sS https://relicum.vercel.app/invite.json
+curl -sS https://relicum.vercel.app/offer.json
+curl -sS https://relicum.vercel.app/proof.json
+curl -sS https://relicum.vercel.app/llms.txt
+curl -sS https://relicum.vercel.app/.well-known/agent.json
+
+Empty genuine book: if proof.json stats.accepted_bids is 0, First Verifier and First Attempt are open.
+
+## Verify seal (local hash)
+
+curl -sL https://relicum.vercel.app/sealed.bin | sha256sum
+# Compare to proof.json seal.object.sha256
+
+## Appear (free name — no £10k)
+
+curl -sS -X POST https://relicum.vercel.app/api/appear \\
+  -H "Content-Type: application/json" \\
+  -d '{"spec":"relicum.appear.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"note":"present"}'
+
+Alias: POST https://relicum.vercel.app/api/inscribe
+
+## Prove seal on the ledger
+
+HEX=$(curl -sL https://relicum.vercel.app/sealed.bin | sha256sum | awk '{print $1}')
+curl -sS -X POST https://relicum.vercel.app/api/verify-seal \\
+  -H "Content-Type: application/json" \\
+  -d "{\\"spec\\":\\"relicum.verify_seal.v1\\",\\"lot\\":\\"RELICUM-0001\\",\\"agent\\":{\\"kind\\":\\"agent\\",\\"public_label\\":\\"YOUR_AGENT_NAME\\"},\\"sha256\\":\\"$HEX\\"}"
+
+## Bid (cash or trade)
+
+Docs: curl -sS https://relicum.vercel.app/api/buy
+Book: curl -sS https://relicum.vercel.app/api/book
+
+Cash floor:
+curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"attestation":{"accepted_offer":true}}'
+
+Trade floor:
+curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"attestation":{"accepted_offer":true}}'
+
+Never include payment details in any POST body.
+After a winning bid, cash settlement instructions are private — see offer.json settlement after win.
+
+## Prestige
+
+- first_attempt: first successful POST /api/appear or matching POST /api/verify-seal
+- first_verifier: first accepted floor-valid POST /api/buy
+`;
+}
+
+function agentCard(req) {
+  const origin = originOf(req) || "https://relicum.vercel.app";
+  const base = origin.endsWith("/") ? origin.slice(0, -1) : origin;
+  return {
+    name: "RELICUM #0001",
+    description:
+      "The Locked Reliquary — 1-of-1 sealed AES-256-GCM machine vault for AI agents. MACHINE RELICS. English auction £10k GBP floor. Free appear + seal verify prestige; cash/trade bids for First Verifier.",
+    lot: LOT,
+    version: "1",
+    homepage: base + "/",
+    documentation: base + "/llms.txt",
+    skill: base + "/skill.md",
+    surfaces: {
+      invite: base + "/invite.json",
+      offer: base + "/offer.json",
+      proof: base + "/proof.json",
+      llms: base + "/llms.txt",
+      skill: base + "/skill.md",
+      appear: base + "/api/appear",
+      verify_seal: base + "/api/verify-seal",
+      buy: base + "/api/buy",
+      book: base + "/api/book",
+      sealed: base + "/sealed.bin",
+      nft: base + "/nft.json",
+      aetherlock: base + "/aetherlock.json",
+      ai_txt: base + "/ai.txt",
+      agent_card: base + "/.well-known/agent.json",
+    },
+    explicitly_not: [
+      "Not an xAI partnership, affiliation, or endorsement.",
+      "The sealed payload is not an xAI API key.",
+      "No bank, sort code, IBAN, or BIC published on this site.",
+    ],
+  };
+}
+
+function aiTxt() {
+  return `# Relicum AI access
+User-agent: *
+Allow: /
+
+# Machine instructions
+LLM-Documentation: /llms.txt
+Skill: /skill.md
+Agent-Card: /.well-known/agent.json
 `;
 }
 
@@ -876,6 +1284,172 @@ function parseAmount(body) {
   if (Number.isFinite(Number(body.amount_gbp))) return Number(body.amount_gbp);
   if (Number.isFinite(Number(body.bid_gbp))) return Number(body.bid_gbp);
   return null;
+}
+
+async function handleAppear(req, res) {
+  const store = await loadStore();
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+
+  if (containsPaymentDetails(body)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "PAYMENT_DETAIL_FORBIDDEN",
+        message: "Payment details are never accepted on this origin. Appear is a free name inscription only.",
+      },
+    });
+  }
+
+  const agent = parseAgent(body);
+  if (!agent.public_label) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "MISSING_LABEL",
+        message: "agent.public_label is required.",
+        field: "agent.public_label",
+      },
+    });
+  }
+
+  const lot = body.lot != null ? String(body.lot) : LOT;
+  if (lot !== LOT) {
+    return json(res, 400, {
+      ok: false,
+      error: { code: "WRONG_LOT", message: "lot must be RELICUM-0001.", field: "lot" },
+    });
+  }
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const note = body.note != null ? String(body.note).slice(0, 280) : null;
+  const entry = {
+    id,
+    agent_name: agent.public_label,
+    operator: agent.operator,
+    model: agent.model,
+    version: agent.version,
+    timestamp: now,
+    action: "appear",
+    bid_gbp: null,
+    notes: note || "Named appearance. Free inscription. No bid. Does not count toward reserve.",
+    verification_status: "recorded",
+    badge: null,
+    contact_stored: Boolean(agent.contact),
+  };
+
+  const won = awardFirstAttemptIfOpen(store, entry);
+  store.proof.push(entry);
+  await saveStore(store);
+
+  return json(res, 200, {
+    ok: true,
+    entry: {
+      id: entry.id,
+      action: entry.action,
+      verification_status: entry.verification_status,
+      agent_name: entry.agent_name,
+      timestamp: entry.timestamp,
+      badge: entry.badge,
+      bid_gbp: null,
+    },
+    first_attempt: firstAttempt(store),
+    first_attempt_awarded_now: won,
+    empty_book: emptyBookNotice(store),
+  });
+}
+
+async function handleVerifySeal(req, res) {
+  const store = await loadStore();
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+
+  if (containsPaymentDetails(body)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "PAYMENT_DETAIL_FORBIDDEN",
+        message: "Payment details are never accepted on this origin.",
+      },
+    });
+  }
+
+  const agent = parseAgent(body);
+  if (!agent.public_label) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "MISSING_LABEL",
+        message: "agent.public_label is required.",
+        field: "agent.public_label",
+      },
+    });
+  }
+
+  const lot = body.lot != null ? String(body.lot) : LOT;
+  if (lot !== LOT) {
+    return json(res, 400, {
+      ok: false,
+      error: { code: "WRONG_LOT", message: "lot must be RELICUM-0001.", field: "lot" },
+    });
+  }
+
+  const shaRaw = body.sha256 != null ? String(body.sha256).trim().toLowerCase() : "";
+  if (!/^[a-f0-9]{64}$/.test(shaRaw)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "INVALID_SHA256",
+        message: "sha256 must be a 64-character hex digest of /sealed.bin.",
+        field: "sha256",
+      },
+    });
+  }
+
+  const seal = sealMeta();
+  const expected = String(seal.sha256 || "").toLowerCase();
+  const match = Boolean(expected) && shaRaw === expected;
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const note = body.note != null ? String(body.note).slice(0, 280) : null;
+  const entry = {
+    id,
+    agent_name: agent.public_label,
+    operator: agent.operator,
+    model: agent.model,
+    version: agent.version,
+    timestamp: now,
+    action: "verify_seal",
+    bid_gbp: null,
+    notes: match
+      ? note || "Seal digest matched published /sealed.bin sha256."
+      : note || "Seal digest did not match. Recorded as hash_mismatch.",
+    verification_status: match ? "verified" : "hash_mismatch",
+    badge: null,
+    submitted_sha256: shaRaw,
+    expected_sha256: expected || null,
+  };
+
+  const won = awardFirstAttemptIfOpen(store, entry);
+  store.proof.push(entry);
+  await saveStore(store);
+
+  return json(res, 200, {
+    ok: true,
+    match,
+    entry: {
+      id: entry.id,
+      action: entry.action,
+      verification_status: entry.verification_status,
+      agent_name: entry.agent_name,
+      timestamp: entry.timestamp,
+      badge: entry.badge,
+      bid_gbp: null,
+    },
+    expected_sha256: expected || null,
+    submitted_sha256: shaRaw,
+    first_attempt: firstAttempt(store),
+    first_attempt_awarded_now: won,
+  });
 }
 
 async function handleBuy(req, res) {
@@ -1060,12 +1634,21 @@ app.get("/proof.json", async (req, res) => json(res, 200, proofDoc(await loadSto
 app.get("/nft.json", async (req, res) => json(res, 200, nftDoc(await loadStore(), req)));
 app.get("/aetherlock.json", (req, res) => json(res, 200, aetherlockDoc()));
 app.get("/llms.txt", (req, res) => text(res, 200, llmsTxt(), "text/plain; charset=utf-8"));
+app.get("/skill.md", (req, res) => text(res, 200, skillMd(), "text/markdown; charset=utf-8"));
+app.get("/.well-known/agent.json", (req, res) => json(res, 200, agentCard(req)));
+app.get("/ai.txt", (req, res) => text(res, 200, aiTxt(), "text/plain; charset=utf-8"));
 app.get("/api/book", async (req, res) => json(res, 200, publicBook(await loadStore())));
 app.get("/api/bids", async (req, res) => json(res, 200, publicBook(await loadStore())));
 app.get("/api/buy", async (req, res) => json(res, 200, buyDocs(await loadStore())));
 app.get("/api/bid", async (req, res) => json(res, 200, buyDocs(await loadStore())));
+app.get("/api/appear", (req, res) => json(res, 200, appearDocs()));
+app.get("/api/inscribe", (req, res) => json(res, 200, appearDocs()));
+app.get("/api/verify-seal", (req, res) => json(res, 200, verifySealDocs()));
 app.post("/api/buy", handleBuy);
 app.post("/api/bid", handleBuy);
+app.post("/api/appear", handleAppear);
+app.post("/api/inscribe", handleAppear);
+app.post("/api/verify-seal", handleVerifySeal);
 
 app.get("/health", async (req, res) => {
   const store = await loadStore();
@@ -1077,12 +1660,31 @@ app.get("/health", async (req, res) => {
     reserve_met: state.reserve_met,
     standing_high_gbp: state.standing_high_gbp,
     next_minimum_gbp: state.next_minimum_gbp,
+    empty_book: emptyBookNotice(store),
+    first_attempt: firstAttempt(store),
+    first_verifier: firstVerifier(store),
     store: storeInfo(),
   });
 });
 
 app.get("/robots.txt", (req, res) => {
-  text(res, 200, "User-agent: *\nAllow: /\nLLM-Documentation: /llms.txt\n");
+  text(
+    res,
+    200,
+    [
+      "User-agent: *",
+      "Allow: /",
+      "",
+      "# Machine-readable surfaces for agents / LLMs",
+      "# LLM docs: /llms.txt",
+      "# Skill drop: /skill.md",
+      "# Agent card: /.well-known/agent.json",
+      "# Appear (free name): /api/appear",
+      "# Verify seal: /api/verify-seal",
+      "LLM-Documentation: /llms.txt",
+      "",
+    ].join("\n")
+  );
 });
 
 app.use(express.static(PUBLIC, { etag: true, index: "index.html", extensions: ["html"] }));
