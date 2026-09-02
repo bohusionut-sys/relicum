@@ -5,7 +5,7 @@
  * RELICUM #0001 — The Locked Reliquary
  * MACHINE RELICS. 1-of-1 web-native NFT for AI agents.
  *
- * Node + Express. Static frontend. Atomic data/store.json.
+ * Node + Express. Static frontend. Durable store via Turso or data/store.json.
  * CORS open. No auth. No secrets. Witness key is not on this origin.
  */
 
@@ -18,11 +18,20 @@ const cors = require("cors");
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, "public");
 const DATA = path.join(ROOT, "data");
-const STORE_PATH = path.join(DATA, "store.json");
 const SEALED_PATH = path.join(PUBLIC, "sealed.bin");
 const SEAL_META_PATH = path.join(DATA, "seal-meta.json");
 
 const PORT = Number(process.env.PORT) || 3000;
+
+const {
+  STORE_PATH,
+  SEED_PROOF,
+  HONESTY_NOTE,
+  defaultStore,
+  loadStore,
+  saveStore,
+  storeInfo,
+} = require("./lib/store");
 
 const LOT = "RELICUM-0001";
 const TITLE = "RELICUM #0001";
@@ -39,47 +48,8 @@ const CURRENCY = "GBP";
 const PAYMENT_RE =
   /\b(iban|bic\b|swift|sort[\s-]?code|account[\s-]?number|routing[\s-]?number|bank[\s-]?account|iban:|bic:)\b/i;
 
-const HONESTY_NOTE =
-  "Entries with verification_status=removed_not_genuine were internally seeded demo/test writes from sandbox curl during the original build. They stay on the append-only ledger and do not count toward standing_high_gbp, reserve_met, or next_minimum_gbp. They were not real external agent bids.";
-
-const SEED_PROOF = [
-  {
-    id: "sandbox-curl-lowball-9999",
-    agent_name: "lowball",
-    operator: "qa",
-    model: "Grok",
-    version: "4",
-    timestamp: "2026-08-27T13:12:32.801Z",
-    action: "attempt",
-    bid_gbp: 9999,
-    notes:
-      "Retracted. Internally seeded demo/test attempt (£9999, below floor) written by sandbox curl during the original build. Not a real external agent bid. Does not count toward standing high, reserve, or next minimum.",
-    verification_status: "removed_not_genuine",
-  },
-  {
-    id: "69b04489-3d8c-47c7-ad78-dc74bde13b68",
-    agent_name: "vault-walker",
-    operator: "field",
-    model: "Grok",
-    version: "4",
-    timestamp: "2026-08-27T13:12:47.255Z",
-    action: "bid",
-    bid_gbp: 10000,
-    notes:
-      "Retracted. Internally seeded demo/test bid written by sandbox curl during the original build (2026-08-27T13:12:47.255Z), Grok v4 operator field. Not a real external agent bid. Does not count toward standing high, reserve, or next minimum.",
-    verification_status: "removed_not_genuine",
-  },
-];
-
 function ensureDir(d) {
   fs.mkdirSync(d, { recursive: true });
-}
-
-function atomicWrite(filePath, contents) {
-  ensureDir(path.dirname(filePath));
-  const tmp = filePath + ".tmp";
-  fs.writeFileSync(tmp, contents);
-  fs.renameSync(tmp, filePath);
 }
 
 function loadJson(filePath, fallback) {
@@ -88,44 +58,6 @@ function loadJson(filePath, fallback) {
   } catch {
     return fallback;
   }
-}
-
-function defaultStore() {
-  return {
-    version: 1,
-    lot: LOT,
-    created_at: "2026-08-27T00:00:00.000Z",
-    bids: [],
-    proof: SEED_PROOF.map((e) => ({ ...e })),
-  };
-}
-
-function loadStore() {
-  if (!fs.existsSync(STORE_PATH)) {
-    const store = defaultStore();
-    atomicWrite(STORE_PATH, JSON.stringify(store, null, 2) + "\n");
-    return store;
-  }
-  const store = loadJson(STORE_PATH, defaultStore());
-  if (!Array.isArray(store.bids)) store.bids = [];
-  if (!Array.isArray(store.proof)) store.proof = [];
-  const have = new Set(store.proof.map((e) => e && e.id));
-  for (const seed of SEED_PROOF) {
-    if (!have.has(seed.id)) {
-      store.proof.push({ ...seed });
-    } else {
-      const row = store.proof.find((e) => e.id === seed.id);
-      if (row && row.verification_status !== "removed_not_genuine") {
-        row.verification_status = "removed_not_genuine";
-        row.notes = seed.notes;
-      }
-    }
-  }
-  return store;
-}
-
-function saveStore(store) {
-  atomicWrite(STORE_PATH, JSON.stringify(store, null, 2) + "\n");
 }
 
 function genuineBids(store) {
@@ -159,19 +91,6 @@ function honestyBlock() {
     note: HONESTY_NOTE,
     ranking:
       "Only verification_status=accepted bids count toward standing_high_gbp, reserve_met, and next_minimum_gbp.",
-  };
-}
-
-function storeInfo() {
-  return {
-    backend: "file",
-    path: "data/store.json",
-    durable: true,
-    survives_process_restart: true,
-    append_only_policy: true,
-    atomic_writes: true,
-    permanence: "origin-durable",
-    note: "JSON file on this origin. Writes are atomic (temp file + rename). Proof rows are never deleted.",
   };
 }
 
@@ -572,7 +491,7 @@ function proofDoc(store) {
     lot: LOT,
     title: "The Proof",
     append_only: true,
-    durable: true,
+    durable: storeInfo().durable,
     prestige:
       "A public, append-only ledger of named agent attempts, bids, and demonstrated capabilities. Names are inscribed. The book is not rewritten.",
     store: storeInfo(),
@@ -902,8 +821,8 @@ function parseAmount(body) {
   return null;
 }
 
-function handleBuy(req, res) {
-  const store = loadStore();
+async function handleBuy(req, res) {
+  const store = await loadStore();
   const state = auctionState(store);
   const body = req.body && typeof req.body === "object" ? req.body : {};
 
@@ -946,7 +865,7 @@ function handleBuy(req, res) {
       notes: "Refused BELOW_FLOOR. Inscribed as attempt. Does not count toward reserve.",
       verification_status: "below_minimum",
     });
-    saveStore(store);
+    await saveStore(store);
     return json(res, 400, {
       ok: false,
       error: {
@@ -971,7 +890,7 @@ function handleBuy(req, res) {
       notes: "Refused BELOW_INCREMENT. Does not count toward reserve.",
       verification_status: "below_minimum",
     });
-    saveStore(store);
+    await saveStore(store);
     return json(res, 400, {
       ok: false,
       error: {
@@ -1037,7 +956,7 @@ function handleBuy(req, res) {
     verification_status: "accepted",
     badge: wasFirst ? "first_verifier" : null,
   });
-  saveStore(store);
+  await saveStore(store);
   const next = auctionState(store);
   const fv = firstVerifier(store);
   return json(res, 200, {
@@ -1063,7 +982,6 @@ function handleBuy(req, res) {
 
 ensureDir(DATA);
 ensureDir(PUBLIC);
-loadStore();
 sealMeta();
 
 const app = express();
@@ -1078,21 +996,21 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/invite.json", (req, res) => json(res, 200, inviteDoc(loadStore())));
-app.get("/offer.json", (req, res) => json(res, 200, offerDoc(loadStore())));
-app.get("/proof.json", (req, res) => json(res, 200, proofDoc(loadStore())));
-app.get("/nft.json", (req, res) => json(res, 200, nftDoc(loadStore(), req)));
+app.get("/invite.json", async (req, res) => json(res, 200, inviteDoc(await loadStore())));
+app.get("/offer.json", async (req, res) => json(res, 200, offerDoc(await loadStore())));
+app.get("/proof.json", async (req, res) => json(res, 200, proofDoc(await loadStore())));
+app.get("/nft.json", async (req, res) => json(res, 200, nftDoc(await loadStore(), req)));
 app.get("/aetherlock.json", (req, res) => json(res, 200, aetherlockDoc()));
 app.get("/llms.txt", (req, res) => text(res, 200, llmsTxt(), "text/plain; charset=utf-8"));
-app.get("/api/book", (req, res) => json(res, 200, publicBook(loadStore())));
-app.get("/api/bids", (req, res) => json(res, 200, publicBook(loadStore())));
-app.get("/api/buy", (req, res) => json(res, 200, buyDocs(loadStore())));
-app.get("/api/bid", (req, res) => json(res, 200, buyDocs(loadStore())));
+app.get("/api/book", async (req, res) => json(res, 200, publicBook(await loadStore())));
+app.get("/api/bids", async (req, res) => json(res, 200, publicBook(await loadStore())));
+app.get("/api/buy", async (req, res) => json(res, 200, buyDocs(await loadStore())));
+app.get("/api/bid", async (req, res) => json(res, 200, buyDocs(await loadStore())));
 app.post("/api/buy", handleBuy);
 app.post("/api/bid", handleBuy);
 
-app.get("/health", (req, res) => {
-  const store = loadStore();
+app.get("/health", async (req, res) => {
+  const store = await loadStore();
   const state = auctionState(store);
   json(res, 200, {
     ok: true,
@@ -1101,6 +1019,7 @@ app.get("/health", (req, res) => {
     reserve_met: state.reserve_met,
     standing_high_gbp: state.standing_high_gbp,
     next_minimum_gbp: state.next_minimum_gbp,
+    store: storeInfo(),
   });
 });
 
@@ -1117,15 +1036,26 @@ app.use((req, res) => {
   res.status(404).type("text/plain").send("Not found.\n");
 });
 
-if (require.main === module) {
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log("RELICUM #0001 listening on " + PORT);
-    console.log("MACHINE RELICS / The Locked Reliquary / SEALED");
-  });
+async function boot() {
+  await loadStore();
+  if (require.main === module) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log("RELICUM #0001 listening on " + PORT);
+      console.log("MACHINE RELICS / The Locked Reliquary / SEALED");
+      console.log("store backend:", storeInfo().backend);
+    });
+  }
 }
+boot().catch((err) => {
+  console.error("boot failed", err && err.message ? err.message : err);
+  if (require.main === module) process.exit(1);
+});
 
 module.exports = app;
 module.exports.app = app;
 module.exports.loadStore = loadStore;
+module.exports.saveStore = saveStore;
+module.exports.defaultStore = defaultStore;
+module.exports.storeInfo = storeInfo;
 module.exports.auctionState = auctionState;
 module.exports.STORE_PATH = STORE_PATH;
