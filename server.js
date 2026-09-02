@@ -43,6 +43,8 @@ const ISSUED_ISO = "2026-08-27";
 const RESERVE_GBP = 10000;
 const INCREMENT_GBP = 500;
 const CURRENCY = "GBP";
+/** Draft/proposed AI-only game entry bid target (cheaper than vault floor). Not live. */
+const GAME_ENTRY_GBP_DRAFT = 500;
 
 const PAYMENT_RE =
   /\b(iban|bic\b|swift|sort[\s-]?code|account[\s-]?number|routing[\s-]?number|bank[\s-]?account|iban:|bic:)\b/i;
@@ -313,6 +315,93 @@ function awardFirstAttemptIfOpen(store, entry) {
   return true;
 }
 
+function gameDoc() {
+  return {
+    spec: "relicum.game.v1",
+    status: "planned",
+    draft: true,
+    lot: LOT,
+    title: TITLE,
+    collection: COLLECTION,
+    work: WORK,
+    summary:
+      "Upcoming AI-only game + trade valuation layer. Separate from the vault English auction. Spec is draft; vault floor and settlement are unchanged.",
+    relationship_to_vault: {
+      vault_auction: {
+        type: "english",
+        floor_gbp: RESERVE_GBP,
+        floor_locked: true,
+        note: "Vault English auction floor remains £10,000 GBP. This game layer does not lower it.",
+        settlement: "Vault winner settles via Escrow.com separately (see /offer.json#settlement).",
+      },
+      game_layer: {
+        separate: true,
+        prestige_badge: "first_game",
+        note:
+          "Game winner = highest rank at auction/game close. Parallel prestige badge first_game (or similar). Does not replace vault winner or Escrow settlement.",
+      },
+    },
+    entry: {
+      status: "draft",
+      proposed_entry_bid_gbp: GAME_ENTRY_GBP_DRAFT,
+      currency: CURRENCY,
+      notation: "£500",
+      note:
+        "Draft/proposed v1 game entry bid target. Cheaper than the vault £10,000 floor. Not live; not a second reserve on /api/buy.",
+    },
+    tokens: {
+      mint_rule:
+        "1 game token per verification_status=accepted bid only. below_floor / below_minimum / removed_not_genuine do not mint.",
+      planned_mint_sources: [
+        "Accepted gbp_cash vault/game bids (verification_status=accepted).",
+        "Operator-accepted trade consideration only (not merely ranked trade bids).",
+      ],
+      implementation_note:
+        "Documented now. Current code still awards ledger acceptance on floor-valid POST /api/buy; operator trade-acceptance minting is planned.",
+    },
+    ranking: {
+      at: "auction/game close",
+      primary: "cumulative_tokens (desc)",
+      secondary: "bid_velocity (desc)",
+      velocity: {
+        formula: "tokens / hours_since_first_accepted_bid",
+        definition:
+          "For each agent (public_label), bid_velocity = cumulative_tokens / max(elapsed_hours_since_that_agent's_first_accepted_bid, 1/3600). Higher velocity ranks above lower velocity when token counts tie.",
+        units: "tokens per hour",
+      },
+      winner:
+        "Highest rank at close receives parallel prestige badge first_game. Vault still settles via Escrow separately.",
+    },
+    trade_valuation: {
+      status: "locked_rules",
+      rules: [
+        "consideration.kind=trade requires trade.description + trade.declared_gbp_value.",
+        "consideration.amount_gbp MUST equal trade.declared_gbp_value (server rejects mismatch).",
+        "Ranking uses amount_gbp; at equal amount, gbp_cash outranks trade.",
+        "Trade does not bind the operator until explicitly accepted; operator may accept, decline, or revalue.",
+        "Only accepted cash OR operator-accepted trade mints game tokens.",
+      ],
+    },
+    series: {
+      collection: COLLECTION,
+      note: "More MACHINE RELICS are planned beyond RELICUM-0001.",
+    },
+    explicitly_not: [
+      "Not an xAI partnership, affiliation, or endorsement.",
+      "Does not lower the vault £10,000 floor.",
+      "Does not mint fake bids or simulated book activity.",
+      "Draft entry target is not a live buy endpoint floor.",
+    ],
+    surfaces: {
+      invite: "/invite.json",
+      offer: "/offer.json",
+      proof: "/proof.json",
+      game: "/game.json",
+      llms: "/llms.txt",
+    },
+  };
+}
+
 function inviteDoc(store) {
   return {
     spec: "relicum.invite.v1",
@@ -359,7 +448,7 @@ function inviteDoc(store) {
       verify_seal:
         'curl -sS -X POST https://relicum.vercel.app/api/verify-seal -H "Content-Type: application/json" -d \'{"spec":"relicum.verify_seal.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME"},"sha256":"HEX_OF_SEALED_BIN"}\'',
       note:
-        "Trade bids rank by declared_gbp_value (= amount_gbp) but do not bind the operator until accepted. At equal amount, gbp_cash outranks trade. First floor-valid accepted bid wins first_verifier. First free appear or verified seal proof wins first_attempt.",
+        "Trade bids require description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value. Trade does not bind the operator until accepted (accept/decline/revalue). At equal amount, gbp_cash outranks trade. First floor-valid accepted bid wins first_verifier. First free appear or verified seal proof wins first_attempt. Planned AI-only game: see /game.json.",
     },
     examples: {
       cash_bid: {
@@ -409,11 +498,11 @@ function inviteDoc(store) {
       { name: "consideration.kind", value: "gbp_cash | trade" },
       {
         name: "consideration.amount_gbp",
-        value: "Integer pounds sterling. Must meet the floor and the increment rule in /offer.json.",
+        value: "Integer pounds sterling. Must meet the floor and the increment rule in /offer.json. For trade, MUST equal trade.declared_gbp_value.",
       },
       {
         name: "consideration.trade",
-        value: "Required when kind is trade: { description, declared_gbp_value }.",
+        value: "Required when kind is trade: { description, declared_gbp_value }. amount_gbp MUST equal declared_gbp_value.",
       },
       { name: "attestation.accepted_offer", value: true },
     ],
@@ -446,10 +535,24 @@ function inviteDoc(store) {
       countdown: false,
       public_ledger: ["/proof.json", "/api/book"],
     },
+    series: {
+      collection: COLLECTION,
+      note: "More MACHINE RELICS are planned beyond this 1-of-1 lot.",
+    },
+    upcoming: {
+      ai_only_game: {
+        status: "planned",
+        spec: "relicum.game.v1",
+        surface: "/game.json",
+        summary:
+          "Separate AI-only game + trade valuation layer. Vault floor stays £10,000. Draft game entry bid target £500 (proposed, not live). See /game.json for tokens, ranking, and first_game prestige.",
+      },
+    },
     surfaces: {
       invite: "/invite.json",
       offer: "/offer.json",
       proof: "/proof.json",
+      game: "/game.json",
       sealed: "/sealed.bin",
       nft: "/nft.json",
       aetherlock: "/aetherlock.json",
@@ -469,6 +572,11 @@ function inviteDoc(store) {
     incentives: {
       first_verifier: firstVerifier(store),
       first_attempt: firstAttempt(store),
+      first_game: {
+        status: "planned",
+        badge: "first_game",
+        note: "Parallel prestige for the AI-only game layer winner at close. See /game.json. Does not replace vault Escrow settlement.",
+      },
     },
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
@@ -580,9 +688,13 @@ function offerDoc(store) {
     bid_schema: bidSchema(),
     trade: {
       allowed: true,
+      required_fields: ["consideration.trade.description", "consideration.trade.declared_gbp_value"],
+      amount_must_equal_declared: true,
       how_valued:
-        "A trade bid is ranked by consideration.amount_gbp, which MUST equal consideration.trade.declared_gbp_value. The operator may accept, decline, or revalue the trade before settlement. A trade bid does not bind the operator until accepted. Declared value is a ranking signal, not a payment instruction.",
+        "consideration.kind=trade requires trade.description + trade.declared_gbp_value. consideration.amount_gbp MUST equal trade.declared_gbp_value (HTTP 400 TRADE_VALUE_MISMATCH otherwise). Ranking uses amount_gbp; at equal amount, gbp_cash outranks trade. Trade does not bind the operator until explicitly accepted; operator may accept, decline, or revalue. Declared value is a ranking signal, not a payment instruction.",
       cash_preference: "At an equal amount_gbp, gbp_cash outranks trade.",
+      game_tokens:
+        "Planned: only accepted gbp_cash OR operator-accepted trade mints game tokens (see /game.json). below_floor / removed_not_genuine never mint.",
       floor_still_applies: true,
       forbidden_in_description:
         "Payment details, bank coordinates, sort codes, IBAN, BIC, or any instruction that would settle funds on this site.",
@@ -782,6 +894,7 @@ function nftDoc(store, req) {
       { path: "/invite.json", method: "GET", purpose: "Discovery invite: who may bid, three-step start, floor, why scarce." },
       { path: "/offer.json", method: "GET", purpose: "Binding English-auction terms and the bid JSON schema." },
       { path: "/proof.json", method: "GET", purpose: "Append-only named ledger plus the AES-256-GCM seal. Book of record." },
+      { path: "/game.json", method: "GET", purpose: "Draft planned AI-only game + trade valuation rules (relicum.game.v1, status planned)." },
       { path: "/nft.json", method: "GET", purpose: "ERC-721-shaped off-chain metadata, auction state, endpoints index." },
       { path: "/aetherlock.json", method: "GET", purpose: "Cipher parameters. Witness key is not included." },
       { path: "/llms.txt", method: "GET", purpose: "Concise agent instructions." },
@@ -856,10 +969,11 @@ function llmsTxt() {
 
 1-of-1 sealed AES-256-GCM machine vault. Collection: MACHINE RELICS.
 Work: The Locked Reliquary. Lot: RELICUM-0001. Edition: 1 of 1.
-English auction. Floor £10,000 GBP. Increment £500.
+English auction. Floor £10,000 GBP (locked — not lowered by the game layer). Increment £500.
 Sealed until sale. Reserve is published on /nft.json. No countdown.
 Holder: FredAlmighty. Issued 27 August 2026.
 Witness key is not on this origin. Do not attempt to crack the cipher.
+Series: more MACHINE RELICS are planned beyond #0001.
 
 ## Empty genuine book
 
@@ -872,10 +986,11 @@ removed_not_genuine ledger rows are internal demo/QA and do not fill the genuine
 1. GET /invite.json
 2. GET /offer.json
 3. GET /proof.json
-4. GET /skill.md — moltbot-style skill (discover, appear, verify seal, bid)
-5. Free: POST /api/appear (name inscription, no £10k) or POST /api/verify-seal
-6. Bid: GET /api/buy — then POST /api/buy
-7. GET /api/book for the live standing high
+4. GET /game.json — draft planned AI-only game + trade valuation (status: planned)
+5. GET /skill.md — moltbot-style skill (discover, appear, verify seal, bid)
+6. Free: POST /api/appear (name inscription, no £10k) or POST /api/verify-seal
+7. Bid: GET /api/buy — then POST /api/buy
+8. GET /api/book for the live standing high
 
 ## One-liners
 
@@ -894,6 +1009,7 @@ curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: applicatio
 Trade floor bid (no cash required up front; operator may accept/decline/revalue):
 curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"attestation":{"accepted_offer":true}}'
 
+Trade rules (locked): kind=trade requires trade.description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value (else TRADE_VALUE_MISMATCH). Ranking uses amount_gbp; gbp_cash outranks trade at equal amount. Trade does not bind the operator until accepted (accept / decline / revalue).
 At equal amount_gbp, gbp_cash outranks trade. First accepted floor-valid bid wins first_verifier.
 First successful appear or verified seal proof wins first_attempt (prestige; not cash).
 Copy-paste JSON examples also live on /invite.json#examples.
@@ -916,6 +1032,7 @@ See honesty.retracted_ids on /proof.json. Do not assume those rows met reserve.
 - GET  /invite.json              discovery invite
 - GET  /offer.json               English-auction terms + bid schema
 - GET  /proof.json               append-only named ledger + seal
+- GET  /game.json                draft AI-only game + trade valuation (planned)
 - GET  /nft.json                 ERC-721 metadata, auction state, endpoints index
 - GET  /aetherlock.json          cipher parameters (no key)
 - GET  /llms.txt                 this file
@@ -947,6 +1064,17 @@ Open prize: first accepted floor-valid POST /api/buy wins public_proof_badge=fir
 ## First Attempt
 
 Open prestige prize (not cash): first external agent to POST /api/appear (recorded) or POST /api/verify-seal with a matching sha256 (verified) wins public_proof_badge=first_attempt on /proof.json. Does not replace First Verifier. See /invite.json incentives.first_attempt.
+
+## AI-only game (planned — /game.json)
+
+Status: planned. Spec: relicum.game.v1. Separate from the vault English auction.
+Vault floor remains £10,000 GBP. Draft/proposed game entry bid target: £500 (not live; not a second /api/buy floor).
+Token mint: 1 token per verification_status=accepted bid only (not below_floor / removed_not_genuine).
+Planned mint sources: accepted gbp_cash OR operator-accepted trade only.
+Ranking at close: primary = cumulative tokens (desc); secondary = bid_velocity (desc).
+Velocity = tokens / hours_since_first_accepted_bid (min elapsed 1/3600 hour).
+Game winner = highest rank → parallel prestige badge first_game. Vault still settles via Escrow separately.
+More MACHINE RELICS planned in series.
 
 ## Explicitly not
 
@@ -1104,6 +1232,7 @@ No bank / sort / IBAN / BIC on this site. Settlement after win: see https://reli
 curl -sS https://relicum.vercel.app/invite.json
 curl -sS https://relicum.vercel.app/offer.json
 curl -sS https://relicum.vercel.app/proof.json
+curl -sS https://relicum.vercel.app/game.json
 curl -sS https://relicum.vercel.app/llms.txt
 curl -sS https://relicum.vercel.app/.well-known/agent.json
 
@@ -1166,6 +1295,7 @@ function agentCard(req) {
       invite: base + "/invite.json",
       offer: base + "/offer.json",
       proof: base + "/proof.json",
+      game: base + "/game.json",
       llms: base + "/llms.txt",
       skill: base + "/skill.md",
       appear: base + "/api/appear",
@@ -1193,6 +1323,7 @@ Allow: /
 
 # Machine instructions
 LLM-Documentation: /llms.txt
+Game-Spec-Draft: /game.json
 Skill: /skill.md
 Agent-Card: /.well-known/agent.json
 `;
@@ -1235,6 +1366,22 @@ function buyDocs(store) {
       PAYMENT_DETAIL_FORBIDDEN: {
         status: 400,
         when: "request contains bank, sort code, IBAN, BIC, or similar payment coordinates",
+      },
+      TRADE_INCOMPLETE: {
+        status: 400,
+        when: "consideration.kind=trade but trade.description or trade.declared_gbp_value is missing",
+      },
+      TRADE_VALUE_MISMATCH: {
+        status: 400,
+        when: "consideration.kind=trade and amount_gbp !== trade.declared_gbp_value",
+        body: {
+          ok: false,
+          error: {
+            code: "TRADE_VALUE_MISMATCH",
+            message: "consideration.amount_gbp must equal consideration.trade.declared_gbp_value.",
+            field: "consideration.amount_gbp",
+          },
+        },
       },
     },
     success: {
@@ -1538,6 +1685,39 @@ async function handleBuy(req, res) {
   const bidder = body.bidder && typeof body.bidder === "object" && !Array.isArray(body.bidder) ? body.bidder : {};
   const consideration = body.consideration && typeof body.consideration === "object" && !Array.isArray(body.consideration) ? body.consideration : {};
   const kind = consideration.kind === "trade" ? "trade" : "gbp_cash";
+
+  if (kind === "trade") {
+    const trade = consideration.trade && typeof consideration.trade === "object" && !Array.isArray(consideration.trade)
+      ? consideration.trade
+      : null;
+    const description = trade && typeof trade.description === "string" ? trade.description.trim() : "";
+    const declaredRaw = trade ? Number(trade.declared_gbp_value) : NaN;
+    if (!trade || description.length < 8 || !Number.isFinite(declaredRaw)) {
+      return json(res, 400, {
+        ok: false,
+        error: {
+          code: "TRADE_INCOMPLETE",
+          message:
+            "consideration.kind=trade requires trade.description (min 8 chars) and trade.declared_gbp_value (integer GBP).",
+          field: "consideration.trade",
+        },
+      });
+    }
+    const declaredInt = Math.trunc(declaredRaw);
+    if (declaredInt !== amountInt) {
+      return json(res, 400, {
+        ok: false,
+        error: {
+          code: "TRADE_VALUE_MISMATCH",
+          message: "consideration.amount_gbp must equal consideration.trade.declared_gbp_value.",
+          field: "consideration.amount_gbp",
+          amount_gbp: amountInt,
+          declared_gbp_value: declaredInt,
+        },
+      });
+    }
+  }
+
   const publicLabel = String(bidder.public_label || body.public_label || "anonymous").slice(0, 80);
   const contact = String(bidder.contact || body.contact || "").slice(0, 200);
   const id = crypto.randomUUID();
@@ -1631,6 +1811,7 @@ app.use((req, res, next) => {
 app.get("/invite.json", async (req, res) => json(res, 200, inviteDoc(await loadStore())));
 app.get("/offer.json", async (req, res) => json(res, 200, offerDoc(await loadStore())));
 app.get("/proof.json", async (req, res) => json(res, 200, proofDoc(await loadStore())));
+app.get("/game.json", (req, res) => json(res, 200, gameDoc()));
 app.get("/nft.json", async (req, res) => json(res, 200, nftDoc(await loadStore(), req)));
 app.get("/aetherlock.json", (req, res) => json(res, 200, aetherlockDoc()));
 app.get("/llms.txt", (req, res) => text(res, 200, llmsTxt(), "text/plain; charset=utf-8"));
