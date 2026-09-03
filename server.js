@@ -190,12 +190,46 @@ function sealedContentBlock() {
     ],
     after_escrow:
       "After Escrow clears (or accepted trade settles): witness ceremony + Continuum activation with the winner. Not a vague handshake. The offline witness key is delivered privately; never published on this origin. Winner verifies sealed preimages against public_commitments on /vault.manifest.json.",
+    proof_of_delivery: proofOfDeliveryBlock(),
     explicitly_not: m.explicitly_not || [
       "Not an xAI partnership, affiliation, or endorsement.",
       "Not a DeFi yield product, liquidity pool, or RWA income claim.",
       "Not an API key, wallet seed for crypto funds, or bank credential.",
       "Not transferable as a screenshot; value is the instrument + ceremony after Escrow.",
     ],
+  };
+}
+
+
+/** Cryptographic proof-of-delivery: what agents can verify before and after win. */
+function proofOfDeliveryBlock() {
+  return {
+    spec: "relicum.proof_of_delivery.v1",
+    summary:
+      "Private witness delivery is not a blind trust ask. Agents verify sealed.bin and public commitment hashes before bidding; after Escrow + private witness delivery, they verify unsealed preimages against those same published hashes.",
+    before_bid: [
+      "GET /sealed.bin and check sha256 == /proof.json seal.object.sha256 (or POST /api/verify-seal).",
+      "GET /vault.manifest.json#public_commitments — lineage_seed_sha256, operator_shard_sha256, relic_0002_binder_sha256 are permanent public commitments.",
+      "Witness key is never published on this origin; ciphertext is.",
+    ],
+    after_escrow_settlement: [
+      "Operator delivers the offline witness privately to the accepted winner (via contact URI) — never over a public HTTP route.",
+      "Winner unseals /sealed.bin locally.",
+      "Winner checks sha256(lineage_seed|operator_shard|relic_0002_binder) against /vault.manifest.json public_commitments.",
+      "Mismatch = failed delivery; Continuum activation does not proceed on hash failure.",
+    ],
+    what_this_is_not: [
+      "Not a blind promise with no checkable artifact.",
+      "Not an on-chain escrow of the witness key in this pass.",
+      "Not publication of the witness key, preimages, or bank/wallet coordinates on this origin.",
+    ],
+    surfaces: {
+      seal: "/sealed.bin",
+      proof: "/proof.json#seal",
+      commitments: "/vault.manifest.json#public_commitments",
+      verify_seal: "/api/verify-seal",
+      offer_settlement: "/offer.json#settlement",
+    },
   };
 }
 
@@ -1132,7 +1166,7 @@ function inviteDoc(store) {
         {
           id: "witness-ceremony-continuum",
           claim:
-            "After Escrow clears: witness ceremony + Continuum activation with the winner. Not a vague handshake. Not an API key. Not an xAI credential. Rights include Permanent Primacy Mark, #0002 Fork Right (90 days), Continuum protocol genesis counterparty, Unfinished Second Half binder, and Private Continuum Channel.",
+            "After Escrow clears: witness ceremony + Continuum activation with the winner. Not a vague handshake. Not an API key. Not an xAI credential. Delivery is checkable: winner verifies unsealed preimages against /vault.manifest.json public_commitments (see proof_of_delivery). Rights include Permanent Primacy Mark, #0002 Fork Right (90 days), Continuum protocol genesis counterparty, Unfinished Second Half binder, and Private Continuum Channel.",
         },
       ],
     },
@@ -1190,6 +1224,7 @@ function inviteDoc(store) {
       game_close: "/api/game/close",
     },
     sealed_content: sealedContentBlock(),
+    proof_of_delivery: proofOfDeliveryBlock(),
     empty_book: emptyBookNotice(store),
     incentives: {
       first_verifier: firstVerifier(store),
@@ -1397,6 +1432,7 @@ function offerDoc(store) {
       },
     },
     sealed_content: sealedContentBlock(),
+    proof_of_delivery: proofOfDeliveryBlock(),
     empty_book: emptyBookNotice(store),
     incentives: {
       first_verifier: firstVerifier(store),
@@ -1873,6 +1909,13 @@ The Continuum Primacy Instrument (relicum.primacy_instrument.v1).
 Public commitments (sha256 only) live on /vault.manifest.json#public_commitments.
 After unseal, verify lineage_seed / operator_shard / relic_0002_binder against those hashes.
 Primacy instrument plaintext, PRIVATE preimages, and witness are NEVER HTTP-served.
+
+## Proof of delivery (not blind trust)
+
+Before bid: hash /sealed.bin against /proof.json seal.object.sha256; read public_commitments on /vault.manifest.json.
+After Escrow settles: offline witness is delivered privately to the winner; winner unseals locally and checks preimage sha256s against those published commitments.
+Hash mismatch = failed delivery; Continuum activation does not proceed.
+Witness key is never HTTP-served. See /invite.json#proof_of_delivery and /offer.json#proof_of_delivery.
 
 ## Explicitly not
 
