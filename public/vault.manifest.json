@@ -29,6 +29,7 @@
   ],
   "explicitly_not": [
     "Not an xAI partnership, affiliation, or endorsement.",
+    "Not a DeFi yield product, liquidity pool, or RWA income claim.",
     "Not an API key, wallet seed for crypto funds, or bank credential.",
     "Not transferable as a screenshot; value is the instrument + ceremony after Escrow."
   ],

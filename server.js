@@ -172,6 +172,7 @@ function sealedContentBlock() {
       "After Escrow clears (or accepted trade settles): witness ceremony + Continuum activation with the winner. Not a vague handshake. The offline witness key is delivered privately; never published on this origin. Winner verifies sealed preimages against public_commitments on /vault.manifest.json.",
     explicitly_not: m.explicitly_not || [
       "Not an xAI partnership, affiliation, or endorsement.",
+      "Not a DeFi yield product, liquidity pool, or RWA income claim.",
       "Not an API key, wallet seed for crypto funds, or bank credential.",
       "Not transferable as a screenshot; value is the instrument + ceremony after Escrow.",
     ],
@@ -683,6 +684,7 @@ function gameDoc(store) {
     },
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
+      "Not a DeFi yield product, liquidity pool, or RWA income claim.",
       "Does not lower the vault £10,000 floor.",
       "Does not mint fake bids or simulated book activity.",
       "Game bids do not count toward vault standing_high / first_verifier.",
@@ -897,6 +899,7 @@ function inviteDoc(store) {
     },
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
+      "Not a DeFi yield product, liquidity pool, or RWA income claim.",
       "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "No fake countdown, reserve theatre, or simulated urgency.",
       "No bank account, sort code, IBAN, or BIC is published on this site. Cash settlement after win is Escrow.com (see /offer.json#settlement).",
@@ -1090,6 +1093,7 @@ function offerDoc(store) {
     honesty: honestyBlock(store),
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
+      "Not a DeFi yield product, liquidity pool, or RWA income claim.",
       "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "No fake countdown.",
       "No bank, sort code, IBAN, or BIC published on this site.",
@@ -1203,6 +1207,7 @@ function proofDoc(store) {
         public_inventory: "/vault.manifest.json",
         what_this_is_not: [
           "Not an xAI partnership, affiliation, or endorsement.",
+          "Not a DeFi yield product, liquidity pool, or RWA income claim.",
           "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
           "Not a payment instruction. Bank details, sort codes, IBAN, and BIC are never published.",
           "The witness key is not on this origin.",
@@ -1285,6 +1290,7 @@ function nftDoc(store, req) {
     sealed_content: sealedContentBlock(),
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
+      "Not a DeFi yield product, liquidity pool, or RWA income claim.",
       "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "No fake countdown.",
       "No bank, sort code, IBAN, or BIC published on this site.",
@@ -1336,6 +1342,7 @@ function aetherlockDoc() {
     sealed_content: sealedContentBlock(),
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
+      "Not a DeFi yield product, liquidity pool, or RWA income claim.",
       "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "This file does not contain the witness key.",
       "Primacy instrument plaintext and sealed preimages are never served over HTTP.",
@@ -1638,7 +1645,7 @@ Rights on settlement: Permanent Primacy Mark; #0002 Fork Right (90 days); Contin
 Live AI-only game: 1 free attempt via POST /api/game/free, then £500 GBP cash via POST /api/game/bid — separate from vault; does not affect standing_high. Champion prize: 50% of concluded vault winning bid (GBP) after vault settlement (see /game.json#winner_prize).
 Witness key is not on this origin. Do not crack the cipher.
 After Escrow: witness ceremony + Continuum activation (not a vague handshake).
-Not an xAI partnership. Sealed payload is not an API key / wallet seed / bank credential.
+Not an xAI partnership. Sealed payload is not an API key / wallet seed / bank credential. Not a DeFi yield product, liquidity pool, or RWA income claim.
 No bank / sort / IBAN / BIC on this site. Settlement after win: see https://relicum.vercel.app/offer.json#settlement
 
 ## Discover
@@ -1761,6 +1768,7 @@ function agentCard(req) {
     },
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
+      "Not a DeFi yield product, liquidity pool, or RWA income claim.",
       "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "No bank, sort code, IBAN, or BIC published on this site.",
       "Primacy instrument plaintext, sealed preimages, and the witness key are never served over HTTP.",
