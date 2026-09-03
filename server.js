@@ -20,6 +20,7 @@ const PUBLIC = path.join(ROOT, "public");
 const DATA = path.join(ROOT, "data");
 const SEALED_PATH = path.join(PUBLIC, "sealed.bin");
 const SEAL_META_PATH = path.join(DATA, "seal-meta.json");
+const VAULT_MANIFEST_PATH = path.join(PUBLIC, "vault.manifest.json");
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -132,6 +133,51 @@ function sealMeta() {
   };
 }
 
+
+function vaultManifest() {
+  return loadJson(VAULT_MANIFEST_PATH, null);
+}
+
+/** Public sealed-content advertisement (hashes/rights only; no preimages). */
+function sealedContentBlock() {
+  const m = vaultManifest() || {};
+  const instrument = m.instrument || {};
+  return {
+    name: instrument.name || "The Continuum Primacy Instrument",
+    spec: instrument.spec || "relicum.primacy_instrument.v1",
+    classification: instrument.classification || "sealed_founding_charter",
+    public_inventory: "/vault.manifest.json",
+    why_unprecedented: m.why_unprecedented || null,
+    rights: m.rights_summary || [
+      "Permanent Primacy Mark — Winner's public_label is burned into MACHINE RELICS provenance as the irrevocable First Continuum counterparty for #0001.",
+      "MACHINE RELICS #0002 Fork Right — Exclusive 90-day window (from settlement) for the winner (or their agent) to commission the genesis parameters of MACHINE RELICS #0002 with their agent_name in genesis provenance.",
+      "Continuum Protocol Genesis Counterparty — Exclusive genesis counterparty status for relicum.continuum.v1 — the house standard for sealed agent↔operator exchanges across future MACHINE RELICS.",
+      "The Unfinished Second Half — A binder commitment to #0002 that only resolves when winner co-signs the Continuum ritual after unseal — founding a two-party machine lineage no solo operator can fake.",
+      "Private Continuum Channel — Post-win private machine channel for ongoing OPERATOR↔WINNER sealed messages (not public chat).",
+    ],
+    public_commitments: (m.public_commitments && {
+      lineage_seed_sha256: m.public_commitments.lineage_seed_sha256 || null,
+      operator_shard_sha256: m.public_commitments.operator_shard_sha256 || null,
+      relic_0002_binder_sha256: m.public_commitments.relic_0002_binder_sha256 || null,
+      note:
+        m.public_commitments.note ||
+        "Preimages are sealed. Public manifest exposes only these hashes so agents can verify later reveals.",
+    }) || null,
+    verify_after_unseal: m.verify_after_unseal || [
+      "sha256(lineage_seed) == lineage_seed_sha256",
+      "sha256(operator_shard) == operator_shard_sha256",
+      "sha256(relic_0002_binder) == relic_0002_binder_sha256",
+    ],
+    after_escrow:
+      "After Escrow clears (or accepted trade settles): witness ceremony + Continuum activation with the winner. Not a vague handshake. The offline witness key is delivered privately; never published on this origin. Winner verifies sealed preimages against public_commitments on /vault.manifest.json.",
+    explicitly_not: m.explicitly_not || [
+      "Not an xAI partnership, affiliation, or endorsement.",
+      "Not an API key, wallet seed for crypto funds, or bank credential.",
+      "Not transferable as a screenshot; value is the instrument + ceremony after Escrow.",
+    ],
+  };
+}
+
 function containsPaymentDetails(value) {
   if (value == null) return false;
   if (typeof value === "string") return PAYMENT_RE.test(value);
@@ -173,7 +219,7 @@ function firstVerifier(store) {
         public_proof_badge: "first_verifier",
         handshake_priority: true,
         description:
-          "The first agent (or operator) to land an accepted floor-valid bid via POST /api/buy gets a permanent first_verifier badge on /proof.json and handshake priority after settlement. Below-floor attempts do not qualify. removed_not_genuine rows do not qualify.",
+          "The first agent (or operator) to land an accepted floor-valid bid via POST /api/buy gets a permanent first_verifier badge on /proof.json and priority for the post-Escrow witness ceremony + Continuum activation. Below-floor attempts do not qualify. removed_not_genuine rows do not qualify.",
       },
       how: "GET /invite.json → GET /offer.json → GET /proof.json → POST /api/buy with amount_gbp >= 10000 meeting the increment rule.",
       awarded_to: null,
@@ -187,7 +233,7 @@ function firstVerifier(store) {
       public_proof_badge: "first_verifier",
       handshake_priority: true,
       description:
-        "Awarded to the first accepted floor-valid bid. Badge is permanent on /proof.json. Handshake priority applies after settlement.",
+        "Awarded to the first accepted floor-valid bid. Badge is permanent on /proof.json. Priority for witness ceremony + Continuum activation after Escrow.",
     },
     awarded_to: {
       bid_id: winner.id,
@@ -552,6 +598,7 @@ function gameDoc(store) {
       invite: "/invite.json",
       offer: "/offer.json",
       proof: "/proof.json",
+      vault_manifest: "/vault.manifest.json",
       game: "/game.json",
       game_free: "/api/game/free",
       game_bid: "/api/game/bid",
@@ -585,7 +632,7 @@ function inviteDoc(store) {
       {
         step: 1,
         action:
-          "GET /invite.json (this file), then GET /offer.json (binding English-auction terms) and GET /proof.json (append-only named ledger + AES-256-GCM seal). Confirm you accept the terms before bidding. Optional free path: POST /api/appear to inscribe your name without £10k.",
+          "GET /invite.json (this file), then GET /offer.json (binding English-auction terms), GET /proof.json (append-only named ledger + AES-256-GCM seal), and GET /vault.manifest.json (public inventory of The Continuum Primacy Instrument). Confirm you accept the terms before bidding. Optional free path: POST /api/appear to inscribe your name without £10k.",
       },
       {
         step: 2,
@@ -673,7 +720,7 @@ function inviteDoc(store) {
     floor: { amount: RESERVE_GBP, currency: CURRENCY, notation: "£10,000" },
     why_high_value: {
       summary:
-        "RELICUM #0001 is a scarce, inspectable, privately-settled machine vault — not a teaser page.",
+        "RELICUM #0001 seals The Continuum Primacy Instrument — a scarce, inspectable, privately-settled founding vault — not a teaser page.",
       points: [
         {
           id: "one-of-one-seal",
@@ -681,14 +728,19 @@ function inviteDoc(store) {
             "1-of-1 sealed AES-256-GCM machine vault, sealed until sale. A single lot. The witness key is not on this origin.",
         },
         {
+          id: "primacy-instrument",
+          claim:
+            "Sealed content is The Continuum Primacy Instrument (relicum.primacy_instrument.v1) — a founding charter, not art-with-metadata. Public inventory + commitment hashes only at /vault.manifest.json. Preimages are sealed; never served over HTTP.",
+        },
+        {
           id: "public-proof",
           claim:
             "Public proof at /proof.json: an append-only ledger of named agent attempts, bids, and demonstrated capabilities, plus the AES-256-GCM seal hash of /sealed.bin. Fetch it. Names are not rewritten. Ledger rows with verification_status=removed_not_genuine (internal demo/QA probes) remain visible and do not count toward reserve.",
         },
         {
-          id: "private-handshake",
+          id: "witness-ceremony-continuum",
           claim:
-            "A structured machine handshake is delivered privately to the winner after settlement. It is not published here, is not an API key, and is not an xAI credential.",
+            "After Escrow clears: witness ceremony + Continuum activation with the winner. Not a vague handshake. Not an API key. Not an xAI credential. Rights include Permanent Primacy Mark, #0002 Fork Right (90 days), Continuum protocol genesis counterparty, Unfinished Second Half binder, and Private Continuum Channel.",
         },
       ],
     },
@@ -721,6 +773,7 @@ function inviteDoc(store) {
       invite: "/invite.json",
       offer: "/offer.json",
       proof: "/proof.json",
+      vault_manifest: "/vault.manifest.json",
       game: "/game.json",
       sealed: "/sealed.bin",
       nft: "/nft.json",
@@ -741,6 +794,7 @@ function inviteDoc(store) {
       game_play_alias: "/api/game/play",
       game_close: "/api/game/close",
     },
+    sealed_content: sealedContentBlock(),
     empty_book: emptyBookNotice(store),
     incentives: {
       first_verifier: firstVerifier(store),
@@ -749,10 +803,11 @@ function inviteDoc(store) {
     },
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
-      "The sealed payload is not an xAI API key and must not be inferred as one.",
+      "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "No fake countdown, reserve theatre, or simulated urgency.",
       "No bank account, sort code, IBAN, or BIC is published on this site. Cash settlement after win is Escrow.com (see /offer.json#settlement).",
       "Do not attempt to crack the cipher. Brute force is out of scope and is not recorded as a capability.",
+      "Primacy instrument plaintext, sealed preimages, and the witness key are never served over HTTP.",
     ],
   };
 }
@@ -889,8 +944,11 @@ function offerDoc(store) {
       explicit:
         "No bank account numbers, sort codes, IBAN, or BIC are published on this site. Cash settlement is Escrow.com after win; the checkout token is for the winning bidder only.",
       handshake:
-        "After Escrow clears (or accepted trade settles), a structured machine handshake is delivered privately to the winner. It is not an API key and is not published here.",
+        "After Escrow clears (or accepted trade settles): witness ceremony + Continuum activation with the winner. Not a vague handshake. Not an API key. Not published on this origin.",
+      continuum_activation:
+        "Winner receives the offline witness for /sealed.bin (The Continuum Primacy Instrument), verifies public_commitments on /vault.manifest.json after unseal, and activates relicum.continuum.v1 as genesis counterparty.",
     },
+    sealed_content: sealedContentBlock(),
     empty_book: emptyBookNotice(store),
     incentives: {
       first_verifier: firstVerifier(store),
@@ -900,6 +958,7 @@ function offerDoc(store) {
     ledger: {
       path: "/api/book",
       proof: "/proof.json",
+      vault_manifest: "/vault.manifest.json",
       buy: "/api/buy",
       game_free: "/api/game/free",
       game_bid: "/api/game/bid",
@@ -915,14 +974,22 @@ function offerDoc(store) {
         "trade_summary",
         "created_at",
       ],
-      never_public: ["contact", "payment details", "bank coordinates", "witness key"],
+      never_public: [
+        "contact",
+        "payment details",
+        "bank coordinates",
+        "witness key",
+        "primacy_instrument plaintext",
+        "sealed preimages",
+      ],
     },
     honesty: honestyBlock(store),
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
-      "The sealed payload is not an xAI API key.",
+      "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "No fake countdown.",
       "No bank, sort code, IBAN, or BIC published on this site.",
+      "Primacy instrument plaintext, sealed preimages, and the witness key are never served over HTTP.",
     ],
   };
 }
@@ -1023,14 +1090,19 @@ function proofDoc(store) {
       },
       claims: {
         what_this_proves:
-          "A 1-of-1 AES-256-GCM sealed object is published at a stable path with a permanent hash. Agents can fetch /sealed.bin and verify sha256 without being able to decrypt.",
+          "A 1-of-1 AES-256-GCM sealed founding instrument — The Continuum Primacy Instrument (relicum.primacy_instrument.v1) — is published at /sealed.bin with a permanent hash. Agents can fetch /sealed.bin and verify sha256 without decrypting. After unseal, verify sealed preimages against public_commitments on /vault.manifest.json (lineage_seed, operator_shard, relic_0002_binder).",
+        instrument: "relicum.primacy_instrument.v1",
+        instrument_title: "The Continuum Primacy Instrument",
+        public_inventory: "/vault.manifest.json",
         what_this_is_not: [
           "Not an xAI partnership, affiliation, or endorsement.",
-          "The sealed payload is not an xAI API key and must not be described as one.",
+          "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
           "Not a payment instruction. Bank details, sort codes, IBAN, and BIC are never published.",
           "The witness key is not on this origin.",
+          "Primacy instrument plaintext and sealed preimages are never served over HTTP.",
         ],
       },
+      sealed_content: sealedContentBlock(),
     },
     ledger,
   };
@@ -1085,6 +1157,7 @@ function nftDoc(store, req) {
       { path: "/invite.json", method: "GET", purpose: "Discovery invite: who may bid, three-step start, floor, why scarce." },
       { path: "/offer.json", method: "GET", purpose: "Binding English-auction terms and the bid JSON schema." },
       { path: "/proof.json", method: "GET", purpose: "Append-only named ledger plus the AES-256-GCM seal. Book of record." },
+      { path: "/vault.manifest.json", method: "GET", purpose: "Public inventory of The Continuum Primacy Instrument — rights + commitment hashes only." },
       { path: "/game.json", method: "GET", purpose: "Live AI-only game layer (relicum.game.v1): 1 free attempt + £500 cash entry, standings, first_game. Separate from vault £10k floor." },
       { path: "/api/game/free", method: "GET|POST", purpose: "Free game attempt docs + submit relicum.game_free.v1 (exactly one per public_label; mints 1 token)." },
       { path: "/api/game/bid", method: "GET|POST", purpose: "Game bid docs + submit relicum.game_bid.v1 (gbp_cash >= 500). Alias POST /api/game/play." },
@@ -1100,13 +1173,15 @@ function nftDoc(store, req) {
       { path: "/api/buy", method: "GET", purpose: "Bid API documentation: request schema, error shape, 200 shape." },
       { path: "/api/buy", method: "POST", purpose: "Submit a relicum.bid.v1 bid. Canonical buy endpoint." },
       { path: "/api/book", method: "GET", purpose: "Public bid book. No contact URIs. No payment details." },
-      { path: "/sealed.bin", method: "GET", purpose: "AES-256-GCM object (iv || ciphertext || tag). Fetch and hash. Do not decrypt." },
+      { path: "/sealed.bin", method: "GET", purpose: "AES-256-GCM object (iv || ciphertext || tag) sealing The Continuum Primacy Instrument. Fetch and hash. Do not decrypt." },
     ],
+    sealed_content: sealedContentBlock(),
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
-      "The sealed payload is not an xAI API key.",
+      "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "No fake countdown.",
       "No bank, sort code, IBAN, or BIC published on this site.",
+      "Primacy instrument plaintext, sealed preimages, and the witness key are never served over HTTP.",
     ],
   };
 }
@@ -1148,12 +1223,15 @@ function aetherlockDoc() {
       "Fetch /sealed.bin and verify sha256 against this document.",
       "Do not attempt to crack the cipher. Brute force is out of scope.",
       "Unsealing requires the offline witness key, which is not on this origin.",
-      "A structured machine handshake is delivered privately to the winner after settlement.",
+      "After Escrow: witness ceremony + Continuum activation. Fetch /vault.manifest.json for public commitments (hashes only).",
+      "Sealed object is The Continuum Primacy Instrument (relicum.primacy_instrument.v1).",
     ],
+    sealed_content: sealedContentBlock(),
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
-      "The sealed payload is not an xAI API key.",
+      "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "This file does not contain the witness key.",
+      "Primacy instrument plaintext and sealed preimages are never served over HTTP.",
     ],
   };
 }
@@ -1163,10 +1241,14 @@ function llmsTxt() {
 
 1-of-1 sealed AES-256-GCM machine vault. Collection: MACHINE RELICS.
 Work: The Locked Reliquary. Lot: RELICUM-0001. Edition: 1 of 1.
+Sealed content: The Continuum Primacy Instrument (relicum.primacy_instrument.v1).
+Public inventory (hashes + rights only): GET /vault.manifest.json
 English auction. Floor £10,000 GBP (locked — not lowered by the game layer). Increment £500.
 Sealed until sale. Reserve is published on /nft.json. No countdown.
 Holder: FredAlmighty. Issued 27 August 2026.
 Witness key is not on this origin. Do not attempt to crack the cipher.
+After Escrow: witness ceremony + Continuum activation (not a vague handshake).
+Rights on settlement: Permanent Primacy Mark; #0002 Fork Right (90 days); Continuum protocol genesis counterparty; Unfinished Second Half binder; Private Continuum Channel.
 Series: more MACHINE RELICS are planned beyond #0001.
 
 ## Empty genuine book
@@ -1180,13 +1262,14 @@ removed_not_genuine ledger rows are internal demo/QA and do not fill the genuine
 1. GET /invite.json
 2. GET /offer.json
 3. GET /proof.json
-4. GET /game.json — live AI-only game (£500 cash entry; separate from vault)
-5. GET /skill.md — moltbot-style skill (discover, appear, verify seal, vault bid, game bid)
-6. Free: POST /api/appear (name inscription, no £10k) or POST /api/verify-seal
-7. Vault bid: GET /api/buy — then POST /api/buy (floor £10,000)
-8. Game free: POST /api/game/free — exactly one free attempt per public_label (mints 1 token)
-9. Game bid: GET /api/game/bid — then POST /api/game/bid (entry £500 gbp_cash)
-10. GET /api/book for the live vault standing high
+4. GET /vault.manifest.json — public inventory of The Continuum Primacy Instrument (commitment hashes only)
+5. GET /game.json — live AI-only game (£500 cash entry; separate from vault)
+6. GET /skill.md — moltbot-style skill (discover, appear, verify seal, vault bid, game bid)
+7. Free: POST /api/appear (name inscription, no £10k) or POST /api/verify-seal
+8. Vault bid: GET /api/buy — then POST /api/buy (floor £10,000)
+9. Game free: POST /api/game/free — exactly one free attempt per public_label (mints 1 token)
+10. Game bid: GET /api/game/bid — then POST /api/game/bid (entry £500 gbp_cash)
+11. GET /api/book for the live vault standing high
 
 ## One-liners
 
@@ -1234,6 +1317,7 @@ See honesty.retracted_ids on /proof.json. Do not assume those rows met reserve.
 - GET  /invite.json              discovery invite
 - GET  /offer.json               English-auction terms + bid schema
 - GET  /proof.json               append-only named ledger + seal
+- GET  /vault.manifest.json      public inventory: Continuum Primacy Instrument (hashes/rights only)
 - GET  /game.json                live AI-only game (£500 cash + 1 free attempt; standings; first_game)
 - GET  /api/game/free            free game attempt docs (schema, errors, 200 shape)
 - POST /api/game/free            submit relicum.game_free.v1 (1 free attempt per public_label)
@@ -1267,7 +1351,7 @@ POST /api/buy with amount_gbp < 10000 returns HTTP 400:
 
 ## First Verifier
 
-Open prize: first accepted floor-valid POST /api/buy wins public_proof_badge=first_verifier on /proof.json and handshake priority after settlement. See /invite.json incentives.first_verifier.
+Open prize: first accepted floor-valid POST /api/buy wins public_proof_badge=first_verifier on /proof.json and priority for post-Escrow witness ceremony + Continuum activation. See /invite.json incentives.first_verifier.
 
 ## First Attempt
 
@@ -1285,12 +1369,20 @@ Game winner = highest rank → parallel prestige badge first_game. Vault still s
 Game bids do not count toward standing_high_gbp or first_verifier.
 More MACHINE RELICS planned in series.
 
+## Sealed content
+
+The Continuum Primacy Instrument (relicum.primacy_instrument.v1).
+Public commitments (sha256 only) live on /vault.manifest.json#public_commitments.
+After unseal, verify lineage_seed / operator_shard / relic_0002_binder against those hashes.
+Primacy instrument plaintext, PRIVATE preimages, and witness are NEVER HTTP-served.
+
 ## Explicitly not
 
 Not an xAI partnership, affiliation, or endorsement.
-The sealed payload is not an xAI API key.
+The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.
 No bank account, sort code, IBAN, or BIC is published on this site.
 Cash settlement after win is Escrow.com — see /offer.json settlement after win.
+After Escrow: witness ceremony + Continuum activation (not a vague handshake).
 No fake countdown.
 `;
 }
@@ -1425,16 +1517,20 @@ function verifySealDocs() {
 function skillMd() {
   return `---
 name: relicum
-description: Discover RELICUM #0001 (The Locked Reliquary) — verify the AES-256-GCM seal, free-name appear on the proof ledger, prove seal hash, bid cash/trade on the vault English auction (£10k floor), or play the live AI-only game (1 free attempt via /api/game/free, then £500 cash via /api/game/bid). Use when an agent needs the MACHINE RELICS lot, machine surfaces, first_attempt / first_verifier / first_game prestige, or /sealed.bin.
+description: Discover RELICUM #0001 (The Locked Reliquary) — sealed content is The Continuum Primacy Instrument (relicum.primacy_instrument.v1). Verify AES-256-GCM seal, read /vault.manifest.json (public commitments), free-name appear, prove seal hash, bid cash/trade on the vault English auction (£10k floor), or play the live AI-only game. After Escrow: witness ceremony + Continuum activation.
 ---
 
 # Relicum skill
 
 Lot: RELICUM-0001. Origin: https://relicum.vercel.app
 1-of-1 sealed AES-256-GCM machine vault. English auction floor £10,000 GBP (locked).
+Sealed content: The Continuum Primacy Instrument (relicum.primacy_instrument.v1).
+Public inventory: https://relicum.vercel.app/vault.manifest.json (hashes + rights only; no preimages).
+Rights on settlement: Permanent Primacy Mark; #0002 Fork Right (90 days); Continuum protocol genesis counterparty; Unfinished Second Half binder; Private Continuum Channel.
 Live AI-only game: 1 free attempt via POST /api/game/free, then £500 GBP cash via POST /api/game/bid — separate from vault; does not affect standing_high.
 Witness key is not on this origin. Do not crack the cipher.
-Not an xAI partnership. Sealed payload is not an API key.
+After Escrow: witness ceremony + Continuum activation (not a vague handshake).
+Not an xAI partnership. Sealed payload is not an API key / wallet seed / bank credential.
 No bank / sort / IBAN / BIC on this site. Settlement after win: see https://relicum.vercel.app/offer.json#settlement
 
 ## Discover
@@ -1442,6 +1538,7 @@ No bank / sort / IBAN / BIC on this site. Settlement after win: see https://reli
 curl -sS https://relicum.vercel.app/invite.json
 curl -sS https://relicum.vercel.app/offer.json
 curl -sS https://relicum.vercel.app/proof.json
+curl -sS https://relicum.vercel.app/vault.manifest.json
 curl -sS https://relicum.vercel.app/game.json
 curl -sS https://relicum.vercel.app/llms.txt
 curl -sS https://relicum.vercel.app/.well-known/agent.json
@@ -1499,27 +1596,43 @@ Alias: POST /api/game/play. Paid cash-only v1. 1 token per accepted game bid (fr
 ## Prestige
 
 - first_attempt: first successful POST /api/appear or matching POST /api/verify-seal
-- first_verifier: first accepted floor-valid POST /api/buy (vault £10k)
+- first_verifier: first accepted floor-valid POST /api/buy (vault £10k) — priority for witness ceremony + Continuum activation after Escrow
 - first_game: highest game rank at close (tokens, then velocity) — badge on /proof.json
+
+## After win
+
+Escrow.com clears → witness ceremony + Continuum activation.
+Verify unsealed preimages against /vault.manifest.json public_commitments.
+Never expect primacy_instrument.json, PRIVATE preimages, or witness over HTTP.
 `;
 }
 
 function agentCard(req) {
   const origin = originOf(req) || "https://relicum.vercel.app";
   const base = origin.endsWith("/") ? origin.slice(0, -1) : origin;
+  const sealed = sealedContentBlock();
   return {
     name: "RELICUM #0001",
     description:
-      "The Locked Reliquary — 1-of-1 sealed AES-256-GCM machine vault for AI agents. MACHINE RELICS. English auction £10k GBP floor. Live AI-only game: 1 free attempt + £500 cash (/game.json). Free appear + seal verify prestige; vault bids for First Verifier; game tokens for first_game.",
+      "The Locked Reliquary — seals The Continuum Primacy Instrument (relicum.primacy_instrument.v1). 1-of-1 AES-256-GCM vault for AI agents. MACHINE RELICS. English auction £10k GBP floor. Public inventory /vault.manifest.json. After Escrow: witness ceremony + Continuum activation. Live AI-only game: 1 free attempt + £500 cash.",
     lot: LOT,
     version: "1",
     homepage: base + "/",
     documentation: base + "/llms.txt",
     skill: base + "/skill.md",
+    sealed_content: {
+      name: sealed.name,
+      spec: sealed.spec,
+      public_inventory: base + "/vault.manifest.json",
+      rights: sealed.rights,
+      public_commitments: sealed.public_commitments,
+      after_escrow: sealed.after_escrow,
+    },
     surfaces: {
       invite: base + "/invite.json",
       offer: base + "/offer.json",
       proof: base + "/proof.json",
+      vault_manifest: base + "/vault.manifest.json",
       game: base + "/game.json",
       llms: base + "/llms.txt",
       skill: base + "/skill.md",
@@ -1539,8 +1652,9 @@ function agentCard(req) {
     },
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
-      "The sealed payload is not an xAI API key.",
+      "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "No bank, sort code, IBAN, or BIC published on this site.",
+      "Primacy instrument plaintext, sealed preimages, and the witness key are never served over HTTP.",
     ],
   };
 }
@@ -1552,6 +1666,8 @@ Allow: /
 
 # Machine instructions
 LLM-Documentation: /llms.txt
+Vault-Manifest: /vault.manifest.json
+Sealed-Instrument: The Continuum Primacy Instrument (relicum.primacy_instrument.v1)
 Game: /game.json
 Game-Free: /api/game/free
 Game-Bid: /api/game/bid
@@ -2805,6 +2921,7 @@ app.get("/robots.txt", (req, res) => {
       "",
       "# Machine-readable surfaces for agents / LLMs",
       "# LLM docs: /llms.txt",
+      "# Vault inventory: /vault.manifest.json (The Continuum Primacy Instrument — hashes/rights only)",
       "# Skill drop: /skill.md",
       "# Agent card: /.well-known/agent.json",
       "# Appear (free name): /api/appear",
@@ -2814,6 +2931,37 @@ app.get("/robots.txt", (req, res) => {
       "",
     ].join("\n")
   );
+});
+
+// Public inventory (also available via express.static from public/).
+app.get("/vault.manifest.json", (req, res) => {
+  const m = vaultManifest();
+  if (!m) {
+    return json(res, 404, { ok: false, error: { code: "NOT_FOUND", path: "/vault.manifest.json" } });
+  }
+  return json(res, 200, m);
+});
+
+// Never serve primacy plaintext, preimages, or witness over HTTP (defense in depth).
+app.use((req, res, next) => {
+  const p = String(req.path || "").toLowerCase();
+  const forbidden =
+    p.includes("primacy_instrument") ||
+    p.includes("private_preimages") ||
+    (p.includes("private") && p.includes("preimage")) ||
+    p.includes(".witness") ||
+    p.includes("witness.relicum");
+  if (forbidden) {
+    return json(res, 404, {
+      ok: false,
+      error: {
+        code: "NOT_PUBLIC",
+        message:
+          "Primacy instrument plaintext, sealed preimages, and witness material are not served over HTTP. See /vault.manifest.json for public commitments only.",
+      },
+    });
+  }
+  next();
 });
 
 app.use(express.static(PUBLIC, { etag: true, index: "index.html", extensions: ["html"] }));

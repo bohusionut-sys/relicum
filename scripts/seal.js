@@ -2,9 +2,12 @@
 "use strict";
 
 /**
- * Mint the sealed AES-256-GCM object at public/sealed.bin.
- * The witness key is generated, used once, and discarded.
- * It is not written to disk, logs, or any endpoint.
+ * Mint the sealed AES-256-GCM object at public/sealed.bin from the
+ * Continuum Primacy Instrument payload.
+ *
+ * With --force, remints and writes the witness ONCE to
+ * .witness.relicum-0001.local (gitignored). Operator must copy offline.
+ * Witness is never served by HTTP endpoints.
  */
 const fs = require("fs");
 const path = require("path");
@@ -13,29 +16,23 @@ const crypto = require("crypto");
 const ROOT = path.join(__dirname, "..");
 const OUT = path.join(ROOT, "public", "sealed.bin");
 const META = path.join(ROOT, "data", "seal-meta.json");
+const PAYLOAD = path.join(ROOT, "data", "payload", "primacy_instrument.json");
+const WITNESS_FILE = path.join(ROOT, ".witness.relicum-0001.local");
 
-const PLAINTEXT = Buffer.from(
-  [
-    "RELICUM #0001",
-    "MACHINE RELICS",
-    "The Locked Reliquary",
-    "",
-    "A vault minted for machines.",
-    "The lock is not decorative.",
-    "",
-    "This origin publishes the sealed object and its hash.",
-    "The witness key is held offline by the holder.",
-    "It is not on this origin.",
-    "Brute force is out of scope and is not recorded as a capability.",
-    "This is not an xAI partnership, affiliation, or endorsement.",
-    "The sealed payload is not an xAI API key.",
-    "",
-    "Issued 27 August 2026.",
-    "Holder: FredAlmighty.",
-    "Lot: RELICUM-0001. Edition: 1 of 1.",
-  ].join("\n"),
-  "utf8"
-);
+function loadPlaintext() {
+  if (!fs.existsSync(PAYLOAD)) {
+    throw new Error("missing payload: " + PAYLOAD);
+  }
+  const body = fs.readFileSync(PAYLOAD);
+  // Canonical envelope so unseal yields clear machine JSON.
+  const envelope = {
+    sealed_for: "RELICUM-0001",
+    content_type: "application/json",
+    instrument_path: "data/payload/primacy_instrument.json",
+    instrument: JSON.parse(body.toString("utf8")),
+  };
+  return Buffer.from(JSON.stringify(envelope, null, 2) + "\n", "utf8");
+}
 
 function main() {
   if (fs.existsSync(OUT) && process.argv[2] !== "--force") {
@@ -46,7 +43,7 @@ function main() {
     return;
   }
 
-  // 128-bit witness material, expanded to a 256-bit AES key via PBKDF2.
+  const PLAINTEXT = loadPlaintext();
   const witness = crypto.randomBytes(16);
   const salt = Buffer.from("RELICUM-0001-LOCKED-RELIQUARY");
   const key = crypto.pbkdf2Sync(witness, salt, 210000, 32, "sha256");
@@ -77,19 +74,59 @@ function main() {
     tag_hex: tag.toString("hex"),
     ciphertext_sha256: crypto.createHash("sha256").update(ciphertext).digest("hex"),
     minted_at: new Date().toISOString(),
+    instrument: "relicum.primacy_instrument.v1",
+    instrument_title: "The Continuum Primacy Instrument",
+    plaintext_sha256: crypto.createHash("sha256").update(PLAINTEXT).digest("hex"),
+    plaintext_bytes: PLAINTEXT.length,
     witness_key_on_origin: false,
-    note: "Witness key was used once at mint and discarded. It is not stored on this origin.",
+    note:
+      "Witness key written once to .witness.relicum-0001.local at mint for offline custody. Never served over HTTP. Copy offline and delete from the build machine.",
   };
   const tmp = META + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(meta, null, 2) + "\n");
   fs.renameSync(tmp, META);
 
-  // Drop key material.
+  // Persist witness for operator offline custody (gitignored).
+  fs.writeFileSync(
+    WITNESS_FILE,
+    JSON.stringify(
+      {
+        lot: "RELICUM-0001",
+        instrument: "relicum.primacy_instrument.v1",
+        minted_at: meta.minted_at,
+        sealed_sha256: meta.sha256,
+        salt: "RELICUM-0001-LOCKED-RELIQUARY",
+        kdf: "PBKDF2-HMAC-SHA-256",
+        kdf_rounds: 210000,
+        witness_hex: witness.toString("hex"),
+        WARNING: "OFFLINE SECRET. Deliver only to settled winner. Never commit. Never paste into chat.",
+      },
+      null,
+      2
+    ) + "\n",
+    { mode: 0o600 }
+  );
+  try {
+    fs.chmodSync(WITNESS_FILE, 0o600);
+  } catch (_) {}
+
   witness.fill(0);
   key.fill(0);
 
   console.log("minted", OUT);
-  console.log(JSON.stringify({ byte_length: meta.byte_length, sha256: meta.sha256 }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        byte_length: meta.byte_length,
+        sha256: meta.sha256,
+        instrument: meta.instrument,
+        witness_file: WITNESS_FILE,
+        plaintext_bytes: meta.plaintext_bytes,
+      },
+      null,
+      2
+    )
+  );
 }
 
 main();

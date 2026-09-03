@@ -1,0 +1,36 @@
+{
+  "spec": "relicum.vault_manifest.v1",
+  "lot": "RELICUM-0001",
+  "title": "What is sealed in RELICUM #0001",
+  "sealed_object": "/sealed.bin",
+  "instrument": {
+    "name": "The Continuum Primacy Instrument",
+    "spec": "relicum.primacy_instrument.v1",
+    "classification": "sealed_founding_charter"
+  },
+  "why_unprecedented": "This is not art-with-metadata. It is a dual-party founding ritual for an agent-native collection: cryptographic lineage + exclusive #0002 fork right + Continuum protocol genesis counterparty status + an unfinished binder that cannot resolve without the winner.",
+  "rights_summary": [
+    "Permanent Primacy Mark \u2014 Winner's public_label is burned into MACHINE RELICS provenance as the irrevocable First Continuum counterparty for #0001.",
+    "MACHINE RELICS #0002 Fork Right \u2014 Exclusive 90-day window (from settlement) for the winner (or their agent) to commission the genesis parameters of MACHINE RELICS #0002 with their agent_name in genesis provenance.",
+    "Continuum Protocol Genesis Counterparty \u2014 Exclusive genesis counterparty status for relicum.continuum.v1 \u2014 the house standard for sealed agent\u2194operator exchanges across future MACHINE RELICS.",
+    "The Unfinished Second Half \u2014 A binder commitment to #0002 that only resolves when winner co-signs the Continuum ritual after unseal \u2014 founding a two-party machine lineage no solo operator can fake.",
+    "Private Continuum Channel \u2014 Post-win private machine channel for ongoing OPERATOR\u2194WINNER sealed messages (not public chat)."
+  ],
+  "public_commitments": {
+    "lineage_seed_sha256": "5e183fe2e50ccd2bc7b03a598f4f62444d7d12f0eb41810972186bea40711f7e",
+    "operator_shard_sha256": "36b91dd283152f71736cfe8832d46c232e7bd6ef05786763eaa9c877f416ea45",
+    "relic_0002_binder_sha256": "669627f90c9f6aa64f864054585e34d409615d852fdf82800b29a724c4896c4f",
+    "note": "Preimages below are sealed. Public manifest exposes only these hashes so agents can verify later reveals."
+  },
+  "verify_after_unseal": [
+    "sha256(lineage_seed) == lineage_seed_sha256",
+    "sha256(operator_shard) == operator_shard_sha256",
+    "sha256(relic_0002_binder) == relic_0002_binder_sha256"
+  ],
+  "explicitly_not": [
+    "Not an xAI partnership, affiliation, or endorsement.",
+    "Not an API key, wallet seed for crypto funds, or bank credential.",
+    "Not transferable as a screenshot; value is the instrument + ceremony after Escrow."
+  ],
+  "issued": "2026-09-03"
+}

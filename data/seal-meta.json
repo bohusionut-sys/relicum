@@ -9,12 +9,16 @@
   "layout": "iv || ciphertext || tag",
   "encoding": "binary",
   "path": "/sealed.bin",
-  "byte_length": 513,
-  "sha256": "fc545e0ba0ffeaf66d2b6689367e6b6a45272b960debe26bf40d8d0b6b5dde7d",
-  "iv_hex": "90a684bc6c0f0304f00f709e",
-  "tag_hex": "893e0cfa61e83b7e8a07de056af03b35",
-  "ciphertext_sha256": "c9c954241b5b330ba62dbe49da7460d550b4472104609c6752aac31310359b2d",
-  "minted_at": "2026-08-27T14:53:05.393Z",
+  "byte_length": 5291,
+  "sha256": "523a742af66ba29cd16ff8533983b86a51b2cb2eccef52b18fce9c2a04e631cf",
+  "iv_hex": "8a783fe899a89b59d9df65fe",
+  "tag_hex": "17e8c74683705dfcfc4e61dcbbc04848",
+  "ciphertext_sha256": "2792489754d6a61a9ef11e9c7561a05bf5ed685bbdd75914685a8efa7c48f2ed",
+  "minted_at": "2026-09-03T08:14:19.917Z",
+  "instrument": "relicum.primacy_instrument.v1",
+  "instrument_title": "The Continuum Primacy Instrument",
+  "plaintext_sha256": "58e000a216a75de7a45ca038ea7bd1dd3f2cf086112b61b7f351f6db635af913",
+  "plaintext_bytes": 5263,
   "witness_key_on_origin": false,
-  "note": "Witness key was used once at mint and discarded. It is not stored on this origin."
+  "note": "Witness key written once to .witness.relicum-0001.local at mint for offline custody. Never served over HTTP. Copy offline and delete from the build machine."
 }

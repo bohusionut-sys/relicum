@@ -4,3 +4,6 @@
 .env.*
 data/store.json.bak
 node_modules/
+.witness*
+data/payload/PRIVATE*
+data/payload/primacy_instrument.json
