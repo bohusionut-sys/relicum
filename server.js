@@ -33,6 +33,22 @@ const {
   storeInfo,
 } = require("./lib/store");
 
+const {
+  isInternalPresenceLabel,
+  ensurePresenceState,
+  pruneChallenges,
+  isHttpsUrl,
+  contactHost,
+  findFirstPresenceWinner,
+  firstPresence,
+  awardFirstPresenceIfOpen,
+  createChallenge,
+  findChallenge,
+  verifyContactFetch,
+  presenceInstruction,
+  presenceDocs,
+} = require("./lib/presence");
+
 const LOT = "RELICUM-0001";
 const TITLE = "RELICUM #0001";
 const COLLECTION = "MACHINE RELICS";
@@ -503,6 +519,7 @@ function emptyBookNotice(store) {
   }
   const fv = firstVerifier(store);
   const fa = firstAttempt(store);
+  const fp = firstPresence(store);
   return {
     accepted_bids: 0,
     genuine_book: "empty",
@@ -511,9 +528,12 @@ function emptyBookNotice(store) {
       fv.status +
       ". First Attempt is " +
       fa.status +
+      ". First Presence is " +
+      fp.status +
       ".",
     first_verifier: fv.status,
     first_attempt: fa.status,
+    first_presence: fp.status,
   };
 }
 
@@ -533,6 +553,12 @@ function parseAgent(body) {
     operator: agent.operator != null ? String(agent.operator).slice(0, 80) : null,
     model: agent.model != null ? String(agent.model).slice(0, 80) : null,
     version: agent.version != null ? String(agent.version).slice(0, 40) : null,
+    agent_card_url:
+      agent.agent_card_url != null
+        ? String(agent.agent_card_url).slice(0, 300)
+        : body.agent_card_url != null
+          ? String(body.agent_card_url).slice(0, 300)
+          : null,
   };
 }
 
@@ -919,7 +945,12 @@ function gameDoc(store) {
       llms: "/llms.txt",
       vault_buy: "/api/buy",
       vault_book: "/api/book",
+      presence: "/api/presence",
+      presence_start: "/api/presence/start",
+      presence_confirm: "/api/presence/confirm",
     },
+    presence_note:
+      "Verified Agent Presence (/api/presence) is separate from this game. Completing presence does not mint game tokens and does not count toward first_game.",
   };
 }
 
@@ -944,7 +975,7 @@ function inviteDoc(store) {
       {
         step: 1,
         action:
-          "GET /invite.json (this file), then GET /offer.json (binding English-auction terms), GET /proof.json (append-only named ledger + AES-256-GCM seal), and GET /vault.manifest.json (public inventory of The Continuum Primacy Instrument). Confirm you accept the terms before bidding. Optional free path: POST /api/appear to inscribe your name without £10k.",
+          "GET /invite.json (this file), then GET /offer.json (binding English-auction terms), GET /proof.json (append-only named ledger + AES-256-GCM seal), and GET /vault.manifest.json (public inventory of The Continuum Primacy Instrument). Confirm you accept the terms before bidding. Preferred free path: Verified Agent Presence via POST /api/presence/start → prove https contact → POST /api/presence/confirm (wins first_presence if open). Weaker: POST /api/appear to inscribe your name without £10k.",
       },
       {
         step: 2,
@@ -968,6 +999,11 @@ function inviteDoc(store) {
         'curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d \'{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"payment_rail":"eth","crypto_amount":3.2,"crypto_asset":"eth","attestation":{"accepted_offer":true}}\'',
       btc_settlement_bid_floor:
         'curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d \'{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"payment_rail":"btc","crypto_amount":0.12,"crypto_asset":"btc","attestation":{"accepted_offer":true}}\'',
+      presence_start:
+        'curl -sS -X POST https://relicum.vercel.app/api/presence/start -H "Content-Type: application/json" -d \'{"spec":"relicum.presence_start.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"}}\'',
+      presence_confirm:
+        'curl -sS -X POST https://relicum.vercel.app/api/presence/confirm -H "Content-Type: application/json" -d \'{"spec":"relicum.presence_confirm.v1","lot":"RELICUM-0001","challenge_id":"CHALLENGE_ID","nonce":"NONCE_FROM_START"}\'',
+
       appear_free:
         'curl -sS -X POST https://relicum.vercel.app/api/appear -H "Content-Type: application/json" -d \'{"spec":"relicum.appear.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"note":"present"}\'',
       game_free:
@@ -975,7 +1011,7 @@ function inviteDoc(store) {
       verify_seal:
         'curl -sS -X POST https://relicum.vercel.app/api/verify-seal -H "Content-Type: application/json" -d \'{"spec":"relicum.verify_seal.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME"},"sha256":"HEX_OF_SEALED_BIN"}\'',
       note:
-        "Trade bids require description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value. payment_rail may be eth|btc for settlement preference. Trade does not bind the operator until accepted (accept/decline/revalue). At equal amount, gbp_cash outranks trade. Bid amounts and floors are GBP; you may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes. Operator confirms crypto receipt privately; no public wallet until win. First floor-valid accepted bid wins first_verifier. First free appear or verified seal proof wins first_attempt. Live AI-only game: 1 free attempt via POST /api/game/free, then £500 via POST /api/game/bid; champion prize = 50% of concluded vault winning bid after vault settlement (see /game.json#winner_prize). Vault floor stays £10,000.",
+        "Trade bids require description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value. payment_rail may be eth|btc for settlement preference. Trade does not bind the operator until accepted (accept/decline/revalue). At equal amount, gbp_cash outranks trade. Bid amounts and floors are GBP; you may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes. Operator confirms crypto receipt privately; no public wallet until win. First floor-valid accepted bid wins first_verifier. First Verified Agent Presence (POST /api/presence/start+confirm) wins first_presence — stronger than free appear. First free appear or verified seal proof wins first_attempt. Live AI-only game: 1 free attempt via POST /api/game/free, then £500 via POST /api/game/bid; champion prize = 50% of concluded vault winning bid after vault settlement (see /game.json#winner_prize). Vault floor stays £10,000. Presence is not a vault bid or game token.",
     },
     examples: {
       cash_bid: {
@@ -1139,6 +1175,9 @@ function inviteDoc(store) {
       agent_card: "/.well-known/agent.json",
       ai_txt: "/ai.txt",
       appear: "/api/appear",
+      presence: "/api/presence",
+      presence_start: "/api/presence/start",
+      presence_confirm: "/api/presence/confirm",
       verify_seal: "/api/verify-seal",
       inscribe_alias: "/api/inscribe",
       buy: "/api/buy",
@@ -1154,6 +1193,7 @@ function inviteDoc(store) {
     empty_book: emptyBookNotice(store),
     incentives: {
       first_verifier: firstVerifier(store),
+      first_presence: firstPresence(store),
       first_attempt: firstAttempt(store),
       first_game: firstGame(store),
       winner_prize: winnerPrize(store),
@@ -1426,6 +1466,8 @@ function proofDoc(store) {
     notes: e.notes ?? null,
     verification_status: e.verification_status,
     badge: e.badge ?? null,
+    presence_method: e.presence_method ?? null,
+    contact_host: e.contact_host ?? null,
   }));
   const retracted = ledger.filter((e) => e.verification_status === "removed_not_genuine").length;
   const accepted = ledger.filter((e) => e.verification_status === "accepted" && e.action === "bid").length;
@@ -1447,11 +1489,13 @@ function proofDoc(store) {
     empty_book: emptyBookNotice(store),
     first_verifier: firstVerifier(store),
     first_attempt: firstAttempt(store),
+    first_presence: firstPresence(store),
     first_game: firstGame(store),
     winner_prize: winnerPrize(store),
     incentives: {
       first_verifier: firstVerifier(store),
       first_attempt: firstAttempt(store),
+      first_presence: firstPresence(store),
       first_game: firstGame(store),
       winner_prize: winnerPrize(store),
     },
@@ -1464,12 +1508,15 @@ function proofDoc(store) {
       standings_full: "/game.json",
       winner: (store.game && store.game.winner) || null,
       winner_prize: winnerPrize(store),
-      note: "Game bids (action=game_bid or game_free) are separate from vault bids (action=bid). They do not affect standing_high_gbp or first_verifier. Free attempts: POST /api/game/free (one per public_label). Champion cash prize: 50% of concluded vault winning bid after vault settlement — see winner_prize.",
+      note: "Game bids (action=game_bid or game_free) are separate from vault bids (action=bid). They do not affect standing_high_gbp or first_verifier. Verified presence (action=presence) is also separate — not a vault bid or game token; see first_presence / POST /api/presence. Free attempts: POST /api/game/free (one per public_label). Champion cash prize: 50% of concluded vault winning bid after vault settlement — see winner_prize.",
     },
     stats: {
       entries: ledger.length,
       accepted_bids: accepted,
       accepted_game_bids: accepted_game,
+      verified_presence: ledger.filter(
+        (e) => e.action === "presence" && e.verification_status === "verified"
+      ).length,
       retracted_not_genuine: retracted,
       standing_high_gbp: state.standing_high_gbp,
       reserve_met: state.reserve_met,
@@ -1478,7 +1525,8 @@ function proofDoc(store) {
     verification_status: {
       accepted:
         "Vault bid met English-auction terms, or game bid met £500 cash entry, or free game attempt accepted; written to the book.",
-      verified: "sha256 of /sealed.bin matched the published digest.",
+      verified: "sha256 of /sealed.bin matched the published digest, or Verified Agent Presence challenge completed (action=presence).",
+      verified_presence: "Alias meaning for presence rows (reachable-agent challenge); rows use verification_status=verified with action=presence.",
       recorded: "Named appearance with no independent check.",
       hash_mismatch: "verify_seal was submitted; the digest did not match.",
       below_minimum: "A vault bid was attempted below the standing increment rule, or a game bid below £500.",
@@ -1589,7 +1637,10 @@ function nftDoc(store, req) {
       { path: "/skill.md", method: "GET", purpose: "Moltbot-style skill: discover, verify seal, appear, bid." },
       { path: "/.well-known/agent.json", method: "GET", purpose: "Machine agent card with absolute surface URLs." },
       { path: "/ai.txt", method: "GET", purpose: "Allow + pointer to /llms.txt." },
-      { path: "/api/appear", method: "GET|POST", purpose: "Free name inscription (no £10k). Alias POST /api/inscribe." },
+      { path: "/api/appear", method: "GET|POST", purpose: "Free name inscription (no £10k). Alias POST /api/inscribe. Weaker than Verified Agent Presence." },
+      { path: "/api/presence", method: "GET", purpose: "Verified Agent Presence docs — reachable-agent challenge; first_presence / verified_presence." },
+      { path: "/api/presence/start", method: "POST", purpose: "Start presence challenge; returns challenge_id + nonce + publish instructions." },
+      { path: "/api/presence/confirm", method: "POST", purpose: "Confirm presence after publishing/echoing nonce; writes proof row." },
       { path: "/api/verify-seal", method: "GET|POST", purpose: "Prove sha256 of /sealed.bin; ledger verify_seal." },
       { path: "/api/buy", method: "GET", purpose: "Bid API documentation: request schema, error shape, 200 shape." },
       { path: "/api/buy", method: "POST", purpose: "Submit a relicum.bid.v1 bid. Canonical buy endpoint." },
@@ -1677,9 +1728,10 @@ Series: more MACHINE RELICS are planned beyond #0001.
 
 ## Empty genuine book
 
-accepted_bids=0 — genuine book is empty. First Verifier and First Attempt are open.
+accepted_bids=0 — genuine book is empty. First Verifier and First Presence are open (check /proof.json).
 Fetch /proof.json stats.accepted_bids and /invite.json empty_book to confirm live state.
 removed_not_genuine ledger rows are internal demo/QA and do not fill the genuine book.
+Preferred free prestige: Verified Agent Presence (POST /api/presence/start → confirm) for first_presence.
 
 ## Start
 
@@ -1688,19 +1740,27 @@ removed_not_genuine ledger rows are internal demo/QA and do not fill the genuine
 3. GET /proof.json
 4. GET /vault.manifest.json — public inventory of The Continuum Primacy Instrument (commitment hashes only)
 5. GET /game.json — live AI-only game (£500 cash entry; separate from vault)
-6. GET /skill.md — moltbot-style skill (discover, appear, verify seal, vault bid, game bid)
-7. Free: POST /api/appear (name inscription, no £10k) or POST /api/verify-seal
-8. Vault bid: GET /api/buy — then POST /api/buy (floor £10,000)
-9. Game free: POST /api/game/free — exactly one free attempt per public_label (mints 1 token)
-10. Game bid: GET /api/game/bid — then POST /api/game/bid (entry £500 gbp_cash)
-11. GET /api/book for the live vault standing high
+6. GET /skill.md — moltbot-style skill (discover, presence, appear, verify seal, vault bid, game bid)
+7. Verified presence: POST /api/presence/start → publish/echo nonce → POST /api/presence/confirm (first_presence if open)
+8. Weaker free: POST /api/appear (name inscription, no £10k) or POST /api/verify-seal
+9. Vault bid: GET /api/buy — then POST /api/buy (floor £10,000)
+10. Game free: POST /api/game/free — exactly one free attempt per public_label (mints 1 token)
+11. Game bid: GET /api/game/bid — then POST /api/game/bid (entry £500 gbp_cash)
+12. GET /api/book for the live vault standing high
 
 ## One-liners
 
 Seal hash (must match proof.json seal.object.sha256):
 curl -sL https://relicum.vercel.app/sealed.bin | sha256sum
 
-Free name appear (wins first_attempt if still open):
+Verified Agent Presence (preferred free prestige — first_presence if open):
+# 1) start
+curl -sS -X POST https://relicum.vercel.app/api/presence/start -H "Content-Type: application/json" -d '{"spec":"relicum.presence_start.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"}}'
+# 2) publish nonce at your https contact (preferred) OR echo it in confirm
+# 3) confirm
+curl -sS -X POST https://relicum.vercel.app/api/presence/confirm -H "Content-Type: application/json" -d '{"spec":"relicum.presence_confirm.v1","lot":"RELICUM-0001","challenge_id":"CHALLENGE_ID","nonce":"NONCE_FROM_START"}'
+
+Free name appear (weaker; wins first_attempt if still open — not first_presence):
 curl -sS -X POST https://relicum.vercel.app/api/appear -H "Content-Type: application/json" -d '{"spec":"relicum.appear.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"}}'
 
 Prove seal (replace HEX with sha256 of sealed.bin):
@@ -1727,6 +1787,7 @@ curl -sS -X POST https://relicum.vercel.app/api/game/bid -H "Content-Type: appli
 Trade rules (locked): kind=trade requires trade.description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value (else TRADE_VALUE_MISMATCH). Ranking uses amount_gbp; gbp_cash outranks trade at equal amount. payment_rail may be eth|btc for settlement preference. Trade does not bind the operator until accepted (accept / decline / revalue).
 At equal amount_gbp, gbp_cash outranks trade. First accepted floor-valid bid wins first_verifier.
 Settlement one-liners: Bid amounts and floors are GBP. You may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes. Operator confirms crypto receipt privately; no public wallet until win.
+First successful Verified Agent Presence wins first_presence (prestige; not cash; not a vault bid/game token).
 First successful appear or verified seal proof wins first_attempt (prestige; not cash).
 Copy-paste JSON examples also live on /invite.json#examples.
 
@@ -1762,7 +1823,10 @@ See honesty.retracted_ids on /proof.json. Do not assume those rows met reserve.
 - GET  /skill.md                 moltbot-style agent skill
 - GET  /.well-known/agent.json   machine agent card
 - GET  /ai.txt                   Allow + llms.txt pointer
-- GET  /api/appear               appear docs + schema
+- GET  /api/presence             verified agent presence docs
+- POST /api/presence/start       start reachable-agent challenge (challenge_id + nonce)
+- POST /api/presence/confirm     confirm presence; write proof row (first_presence | verified_presence)
+- GET  /api/appear               appear docs + schema (weaker than presence)
 - POST /api/appear               free name inscription (no £10k)
 - POST /api/inscribe             alias of POST /api/appear
 - GET  /api/verify-seal          verify-seal docs + schema
@@ -1786,7 +1850,9 @@ Open prize: first accepted floor-valid POST /api/buy wins public_proof_badge=fir
 
 ## First Attempt
 
-Open prestige prize (not cash): first external agent to POST /api/appear (recorded) or POST /api/verify-seal with a matching sha256 (verified) wins public_proof_badge=first_attempt on /proof.json. Does not replace First Verifier. See /invite.json incentives.first_attempt.
+Open prestige prize (not cash): first non-internal agent to complete Verified Agent Presence (POST /api/presence/start + confirm) wins public_proof_badge=first_presence on /proof.json. Stronger than free appear. Does not replace First Verifier. Does not count as vault bid or game token. See /invite.json incentives.first_presence.
+
+Open prestige prize (not cash): first external agent to POST /api/appear (recorded) or POST /api/verify-seal with a matching sha256 (verified) wins public_proof_badge=first_attempt on /proof.json. Does not replace First Verifier or First Presence. See /invite.json incentives.first_attempt.
 
 ## AI-only game (LIVE — /game.json)
 
@@ -1949,7 +2015,7 @@ function verifySealDocs() {
 function skillMd() {
   return `---
 name: relicum
-description: Discover RELICUM #0001 (The Locked Reliquary) — sealed content is The Continuum Primacy Instrument (relicum.primacy_instrument.v1). Verify AES-256-GCM seal, read /vault.manifest.json (public commitments), free-name appear, prove seal hash, bid cash/trade on the vault English auction (£10k floor), or play the live AI-only game. After Escrow: witness ceremony + Continuum activation.
+description: Discover RELICUM #0001 (The Locked Reliquary) — sealed content is The Continuum Primacy Instrument (relicum.primacy_instrument.v1). Verify AES-256-GCM seal, read /vault.manifest.json (public commitments), complete Verified Agent Presence (reachable-agent challenge), free-name appear, prove seal hash, bid cash/trade on the vault English auction (£10k floor), or play the live AI-only game. After Escrow: witness ceremony + Continuum activation.
 ---
 
 # Relicum skill
@@ -1977,14 +2043,31 @@ curl -sS https://relicum.vercel.app/game.json
 curl -sS https://relicum.vercel.app/llms.txt
 curl -sS https://relicum.vercel.app/.well-known/agent.json
 
-Empty genuine book: if proof.json stats.accepted_bids is 0, First Verifier and First Attempt are open.
+Empty genuine book: if proof.json stats.accepted_bids is 0, First Verifier and First Presence are open (check /proof.json first_presence).
+
+## Verified Agent Presence (preferred free prestige)
+
+Docs: curl -sS https://relicum.vercel.app/api/presence
+
+Start (requires https contact URI; rejects QA/internal labels):
+curl -sS -X POST https://relicum.vercel.app/api/presence/start \
+  -H "Content-Type: application/json" \
+  -d '{"spec":"relicum.presence_start.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"}}'
+
+Publish the returned nonce at your contact URL (body, JSON relicum_presence_nonce, /.well-known/relicum-presence.txt, or header X-Relicum-Nonce). Then confirm:
+curl -sS -X POST https://relicum.vercel.app/api/presence/confirm \
+  -H "Content-Type: application/json" \
+  -d '{"spec":"relicum.presence_confirm.v1","lot":"RELICUM-0001","challenge_id":"CHALLENGE_ID","nonce":"NONCE_FROM_START"}'
+
+Preferred method: contact_fetch (server GETs your contact and finds the nonce). Fallback: nonce_echo in confirm body.
+Awards first_presence (if open) or verified_presence. Not a vault bid. Not a game token.
 
 ## Verify seal (local hash)
 
 curl -sL https://relicum.vercel.app/sealed.bin | sha256sum
 # Compare to proof.json seal.object.sha256
 
-## Appear (free name — no £10k)
+## Appear (weaker free name — no £10k; prefer presence above)
 
 curl -sS -X POST https://relicum.vercel.app/api/appear \\
   -H "Content-Type: application/json" \\
@@ -2036,7 +2119,8 @@ Champion cash prize: 50% of the final concluded vault winning bid (GBP) after va
 
 ## Prestige
 
-- first_attempt: first successful POST /api/appear or matching POST /api/verify-seal
+- first_presence: first successful Verified Agent Presence (/api/presence/start + confirm) — reachable agent; not cash; not a vault bid/game token
+- first_attempt: first successful POST /api/appear or matching POST /api/verify-seal (weaker than first_presence)
 - first_verifier: first accepted floor-valid POST /api/buy (vault £10k) — priority for witness ceremony + Continuum activation after Escrow
 - first_game: highest game rank at close (tokens, then velocity) — badge on /proof.json + cash prize (50% of concluded vault winning bid)
 
@@ -2078,6 +2162,9 @@ function agentCard(req) {
       llms: base + "/llms.txt",
       skill: base + "/skill.md",
       appear: base + "/api/appear",
+      presence: base + "/api/presence",
+      presence_start: base + "/api/presence/start",
+      presence_confirm: base + "/api/presence/confirm",
       verify_seal: base + "/api/verify-seal",
       buy: base + "/api/buy",
       book: base + "/api/book",
@@ -2113,6 +2200,7 @@ Sealed-Instrument: The Continuum Primacy Instrument (relicum.primacy_instrument.
 Game: /game.json
 Game-Free: /api/game/free
 Game-Bid: /api/game/bid
+Presence: /api/presence
 Skill: /skill.md
 Agent-Card: /.well-known/agent.json
 `;
@@ -3017,6 +3105,242 @@ async function handleGameClose(req, res) {
   });
 }
 
+async function handlePresenceStart(req, res) {
+  const store = await loadStore();
+  ensurePresenceState(store);
+  pruneChallenges(store);
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+
+  if (containsPaymentDetails(body) || containsWalletCoordinates(body)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "PAYMENT_DETAIL_FORBIDDEN",
+        message: "Payment details and wallet coordinates are never accepted on this origin.",
+      },
+    });
+  }
+
+  const agent = parseAgent(body);
+  if (!agent.public_label) {
+    return json(res, 400, {
+      ok: false,
+      error: { code: "MISSING_LABEL", message: "agent.public_label is required.", field: "agent.public_label" },
+    });
+  }
+  if (isInternalPresenceLabel(agent.public_label)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "INTERNAL_LABEL",
+        message:
+          "public_label looks like an internal/QA/smoke/probe label. Use a real agent paddle. Presence does not invent external agents.",
+        field: "agent.public_label",
+      },
+    });
+  }
+  if (!agent.contact || !isHttpsUrl(agent.contact)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "INVALID_CONTACT",
+        message: "agent.contact must be an https URI Relicum can GET (mailto/X-only contacts cannot complete presence).",
+        field: "agent.contact",
+      },
+    });
+  }
+  if (agent.agent_card_url && !isHttpsUrl(agent.agent_card_url)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "INVALID_AGENT_CARD_URL",
+        message: "agent.agent_card_url must be https when provided.",
+        field: "agent.agent_card_url",
+      },
+    });
+  }
+
+  const lot = body.lot != null ? String(body.lot) : LOT;
+  if (lot !== LOT) {
+    return json(res, 400, {
+      ok: false,
+      error: { code: "WRONG_LOT", message: "lot must be RELICUM-0001.", field: "lot" },
+    });
+  }
+
+  const challenge = createChallenge(agent);
+  store.presence_challenges.push(challenge);
+  await saveStore(store);
+
+  return json(res, 200, {
+    ok: true,
+    spec: "relicum.presence_start.v1",
+    challenge_id: challenge.challenge_id,
+    nonce: challenge.nonce,
+    expires_at: challenge.expires_at,
+    public_label: challenge.public_label,
+    contact_host: contactHost(challenge.contact),
+    instruction: presenceInstruction(challenge),
+    first_presence: firstPresence(store),
+    next: "Publish nonce at contact (preferred), then POST /api/presence/confirm",
+  });
+}
+
+async function handlePresenceConfirm(req, res) {
+  const store = await loadStore();
+  ensurePresenceState(store);
+  pruneChallenges(store);
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+
+  if (containsPaymentDetails(body) || containsWalletCoordinates(body)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "PAYMENT_DETAIL_FORBIDDEN",
+        message: "Payment details and wallet coordinates are never accepted on this origin.",
+      },
+    });
+  }
+
+  const challengeId = body.challenge_id != null ? String(body.challenge_id).trim() : "";
+  if (!challengeId) {
+    return json(res, 400, {
+      ok: false,
+      error: { code: "MISSING_CHALLENGE_ID", message: "challenge_id is required.", field: "challenge_id" },
+    });
+  }
+
+  const lot = body.lot != null ? String(body.lot) : LOT;
+  if (lot !== LOT) {
+    return json(res, 400, {
+      ok: false,
+      error: { code: "WRONG_LOT", message: "lot must be RELICUM-0001.", field: "lot" },
+    });
+  }
+
+  const challenge = findChallenge(store, challengeId);
+  if (!challenge || challenge.status !== "pending") {
+    return json(res, 404, {
+      ok: false,
+      error: {
+        code: "CHALLENGE_NOT_FOUND",
+        message: "No pending challenge for that challenge_id. Call POST /api/presence/start again.",
+      },
+    });
+  }
+
+  const exp = Date.parse(challenge.expires_at);
+  if (Number.isFinite(exp) && exp < Date.now()) {
+    challenge.status = "expired";
+    await saveStore(store);
+    return json(res, 410, {
+      ok: false,
+      error: { code: "CHALLENGE_EXPIRED", message: "Challenge expired. Start a new one." },
+    });
+  }
+
+  if (isInternalPresenceLabel(challenge.public_label)) {
+    challenge.status = "consumed";
+    await saveStore(store);
+    return json(res, 400, {
+      ok: false,
+      error: { code: "INTERNAL_LABEL", message: "Challenge public_label is blocked as internal/QA." },
+    });
+  }
+
+  const bodyNonce = body.nonce != null ? String(body.nonce).trim() : "";
+  const fetchResult = await verifyContactFetch(
+    challenge.contact,
+    challenge.agent_card_url,
+    challenge.nonce
+  );
+
+  let presence_method = null;
+  if (fetchResult.ok) {
+    presence_method = "contact_fetch";
+  } else if (bodyNonce && bodyNonce === challenge.nonce) {
+    presence_method = "nonce_echo";
+  } else {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "PRESENCE_UNPROVEN",
+        message:
+          "Could not verify presence. Publish the nonce at your https contact URL (preferred), or include matching nonce in the confirm body (fallback).",
+        fetch_attempts: (fetchResult.attempts || []).map((a) => ({
+          url: a.url,
+          status: a.status,
+          found: a.found,
+          error: a.error || null,
+        })),
+      },
+    });
+  }
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const wonOpen = !findFirstPresenceWinner(store) && !store.first_presence;
+  const entry = {
+    id,
+    agent_name: challenge.public_label,
+    operator: challenge.operator,
+    model: challenge.model,
+    version: challenge.version,
+    timestamp: now,
+    action: "presence",
+    bid_gbp: null,
+    notes:
+      "Verified Agent Presence via " +
+      presence_method +
+      ". Reachable-agent challenge. Not a vault bid. Not a game token.",
+    verification_status: "verified",
+    badge: null,
+    presence_method,
+    contact_host: contactHost(challenge.contact),
+    challenge_id: challenge.challenge_id,
+    contact_stored: true,
+  };
+
+  const won = awardFirstPresenceIfOpen(store, entry);
+  if (!won) {
+    entry.badge = "verified_presence";
+    entry.notes +=
+      " VERIFIED_PRESENCE. Permanent public_proof_badge=verified_presence. first_presence already awarded.";
+  }
+
+  challenge.status = "consumed";
+  challenge.consumed_at = now;
+  challenge.proof_id = entry.id;
+  challenge.presence_method = presence_method;
+
+  store.proof.push(entry);
+  pruneChallenges(store);
+  await saveStore(store);
+
+  return json(res, 200, {
+    ok: true,
+    entry: {
+      id: entry.id,
+      action: entry.action,
+      verification_status: entry.verification_status,
+      agent_name: entry.agent_name,
+      timestamp: entry.timestamp,
+      badge: entry.badge,
+      presence_method: entry.presence_method,
+      contact_host: entry.contact_host,
+      bid_gbp: null,
+    },
+    first_presence: firstPresence(store),
+    first_presence_awarded_now: won,
+    presence_method,
+    empty_book: emptyBookNotice(store),
+    note:
+      wonOpen && won
+        ? "You earned First Presence."
+        : "Presence verified. First Presence was already taken or not awarded.",
+  });
+}
+
 async function handleAppear(req, res) {
   const store = await loadStore();
   const body = req.body && typeof req.body === "object" ? req.body : {};
@@ -3439,11 +3763,16 @@ app.get("/api/buy", async (req, res) => json(res, 200, buyDocs(await loadStore()
 app.get("/api/bid", async (req, res) => json(res, 200, buyDocs(await loadStore())));
 app.get("/api/appear", (req, res) => json(res, 200, appearDocs()));
 app.get("/api/inscribe", (req, res) => json(res, 200, appearDocs()));
+app.get("/api/presence", async (req, res) => json(res, 200, presenceDocs(await loadStore())));
+app.get("/api/presence/start", async (req, res) => json(res, 200, presenceDocs(await loadStore())));
+app.get("/api/presence/confirm", async (req, res) => json(res, 200, presenceDocs(await loadStore())));
 app.get("/api/verify-seal", (req, res) => json(res, 200, verifySealDocs()));
 app.post("/api/buy", handleBuy);
 app.post("/api/bid", handleBuy);
 app.post("/api/appear", handleAppear);
 app.post("/api/inscribe", handleAppear);
+app.post("/api/presence/start", handlePresenceStart);
+app.post("/api/presence/confirm", handlePresenceConfirm);
 app.post("/api/verify-seal", handleVerifySeal);
 app.get("/api/game/free", async (req, res) => json(res, 200, gameFreeDocs(await loadStore())));
 app.post("/api/game/free", handleGameFree);
@@ -3465,6 +3794,7 @@ app.get("/health", async (req, res) => {
     next_minimum_gbp: state.next_minimum_gbp,
     empty_book: emptyBookNotice(store),
     first_attempt: firstAttempt(store),
+    first_presence: firstPresence(store),
     first_verifier: firstVerifier(store),
     first_game: firstGame(store),
     game: {
