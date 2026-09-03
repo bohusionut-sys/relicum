@@ -44,8 +44,12 @@ const ISSUED_ISO = "2026-08-27";
 const RESERVE_GBP = 10000;
 const INCREMENT_GBP = 500;
 const CURRENCY = "GBP";
-/** Live AI-only game entry (separate from vault £10k floor). Cash-only v1. */
+/** Live AI-only game entry (separate from vault £10k floor). Ranking uses GBP; settlement rail may be eth/btc. */
 const GAME_ENTRY_GBP = 500;
+
+/** Settlement preference (not a parallel floor). Ranking/scoreboard always GBP. */
+const PAYMENT_RAILS = Object.freeze(["gbp_cash", "eth", "btc"]);
+const CRYPTO_ASSETS = Object.freeze(["eth", "btc"]);
 
 const PAYMENT_RE =
   /\b(iban|bic\b|swift|sort[\s-]?code|account[\s-]?number|routing[\s-]?number|bank[\s-]?account|iban:|bic:)\b/i;
@@ -190,6 +194,197 @@ function containsPaymentDetails(value) {
     }
   }
   return false;
+}
+
+/** Reject wallet / address fields — never accept or publish payout coordinates. */
+const WALLET_FIELD_RE =
+  /\b(wallet_address|btc_address|eth_address|receiving_address|payout_address|crypto_wallet|wallet_uri)\b/i;
+const ETH_ADDR_RE = /\b0x[a-fA-F0-9]{40}\b/;
+const BTC_ADDR_RE = /\b(bc1[a-z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b/;
+
+function containsWalletCoordinates(value) {
+  if (value == null) return false;
+  let text;
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    return false;
+  }
+  if (WALLET_FIELD_RE.test(text)) return true;
+  // Allow the published NFT contract address on this site; reject others in request bodies.
+  const matches = text.match(/\b0x[a-fA-F0-9]{40}\b/g) || [];
+  for (const m of matches) {
+    if (m.toLowerCase() !== CONTRACT.toLowerCase()) return true;
+  }
+  if (BTC_ADDR_RE.test(text)) return true;
+  return false;
+}
+
+function normalizePaymentRail(raw) {
+  if (raw == null || raw === "") return "gbp_cash";
+  const s0 = String(raw).trim().toLowerCase();
+  if (s0 === "gbp" || s0 === "gbp_cash" || s0 === "cash" || s0 === "fiat") return "gbp_cash";
+  if (s0 === "eth" || s0 === "ethereum") return "eth";
+  if (s0 === "btc" || s0 === "bitcoin") return "btc";
+  return null;
+}
+
+function normalizeCryptoAsset(raw) {
+  if (raw == null || raw === "") return null;
+  const s0 = String(raw).trim().toLowerCase();
+  if (s0 === "eth" || s0 === "ethereum") return "eth";
+  if (s0 === "btc" || s0 === "bitcoin") return "btc";
+  return null;
+}
+
+/**
+ * Parse payment_rail (settlement preference) + optional crypto_amount/crypto_asset declared intent.
+ * Ranking still requires amount_gbp. Never stores wallet addresses.
+ * Accepts top-level or consideration.* fields.
+ */
+function parseSettlementPreference(body) {
+  const consideration =
+    body && body.consideration && typeof body.consideration === "object" && !Array.isArray(body.consideration)
+      ? body.consideration
+      : {};
+  const rawRail =
+    body && body.payment_rail != null
+      ? body.payment_rail
+      : consideration.payment_rail != null
+        ? consideration.payment_rail
+        : null;
+  const rail = normalizePaymentRail(rawRail);
+  if (rail == null) {
+    return {
+      ok: false,
+      error: {
+        code: "INVALID_PAYMENT_RAIL",
+        message: "payment_rail must be gbp_cash | eth | btc (default gbp_cash). Ranking currency remains GBP.",
+        field: "payment_rail",
+        allowed: PAYMENT_RAILS.slice(),
+      },
+    };
+  }
+
+  const amtRaw =
+    body && body.crypto_amount != null
+      ? body.crypto_amount
+      : consideration.crypto_amount != null
+        ? consideration.crypto_amount
+        : null;
+  const assetRaw =
+    body && body.crypto_asset != null
+      ? body.crypto_asset
+      : consideration.crypto_asset != null
+        ? consideration.crypto_asset
+        : null;
+
+  let crypto_amount = null;
+  let crypto_asset = null;
+
+  if (amtRaw != null || assetRaw != null) {
+    if (amtRaw == null || assetRaw == null) {
+      return {
+        ok: false,
+        error: {
+          code: "CRYPTO_INTENT_INCOMPLETE",
+          message:
+            "Declared crypto intent requires both crypto_amount and crypto_asset (eth|btc). Optional; amount_gbp still ranks the bid.",
+          field: amtRaw == null ? "crypto_amount" : "crypto_asset",
+        },
+      };
+    }
+    const asset = normalizeCryptoAsset(assetRaw);
+    if (!asset) {
+      return {
+        ok: false,
+        error: {
+          code: "INVALID_CRYPTO_ASSET",
+          message: "crypto_asset must be eth | btc when declaring crypto intent.",
+          field: "crypto_asset",
+          allowed: CRYPTO_ASSETS.slice(),
+        },
+      };
+    }
+    const n = Number(amtRaw);
+    if (!Number.isFinite(n) || n <= 0) {
+      return {
+        ok: false,
+        error: {
+          code: "INVALID_CRYPTO_AMOUNT",
+          message: "crypto_amount must be a positive number (declared intent only; not a public wallet).",
+          field: "crypto_amount",
+        },
+      };
+    }
+    if (rail === "gbp_cash") {
+      return {
+        ok: false,
+        error: {
+          code: "CRYPTO_INTENT_RAIL_MISMATCH",
+          message:
+            "crypto_amount/crypto_asset require payment_rail eth or btc (settlement preference). Ranking still uses amount_gbp.",
+          field: "payment_rail",
+        },
+      };
+    }
+    if (rail !== asset) {
+      return {
+        ok: false,
+        error: {
+          code: "CRYPTO_ASSET_RAIL_MISMATCH",
+          message: "crypto_asset must match payment_rail when both are set.",
+          field: "crypto_asset",
+          payment_rail: rail,
+          crypto_asset: asset,
+        },
+      };
+    }
+    crypto_asset = asset;
+    crypto_amount = n;
+  }
+
+  return {
+    ok: true,
+    payment_rail: rail,
+    crypto_amount,
+    crypto_asset,
+  };
+}
+
+function settlementRailsBlock() {
+  return {
+    scoreboard_currency: CURRENCY,
+    floors_and_increments: "GBP only — vault floor £10,000, game entry £500, increment £500. Not a parallel crypto floor.",
+    payment_rail: {
+      field: "payment_rail",
+      enum: PAYMENT_RAILS.slice(),
+      default: "gbp_cash",
+      note:
+        "Optional settlement preference on vault /api/buy and game /api/game/bid. Ranking and acceptance still require amount_gbp (GBP).",
+    },
+    declared_crypto_intent: {
+      fields: ["crypto_amount", "crypto_asset"],
+      optional: true,
+      note:
+        "Optional declared intent only. Does not replace amount_gbp. Operator confirms crypto receipt privately after win; no public wallet on this origin.",
+    },
+    after_win: {
+      gbp_cash: "Escrow.com (intellectual property) — checkout link issued privately via contact URI.",
+      eth: "ETH transfer arranged privately using declared rail + contact. Operator confirms receipt. No public wallet until win.",
+      btc: "BTC transfer arranged privately using declared rail + contact. Operator confirms receipt. No public wallet until win.",
+    },
+    one_liners: [
+      "Bid amounts and floors are GBP.",
+      "You may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes.",
+      "Operator confirms crypto receipt privately; no public wallet until win.",
+    ],
+    not_in_this_pass: [
+      "No full on-chain escrow / smart contracts / wallet custody.",
+      "No public wallet addresses or bank details on this origin.",
+      "No parallel crypto reserve floor.",
+    ],
+  };
 }
 
 function json(res, status, body) {
@@ -399,12 +594,17 @@ function gameStandings(store) {
         tokens: 0,
         first_bid_at: b.created_at,
         last_bid_at: b.created_at,
+        last_payment_rail: b.payment_rail || (b.free || b.consideration_kind === "free" ? null : "gbp_cash"),
       };
       byLabel.set(label, row);
     }
     row.tokens += 1;
     if (String(b.created_at) < String(row.first_bid_at)) row.first_bid_at = b.created_at;
-    if (String(b.created_at) > String(row.last_bid_at)) row.last_bid_at = b.created_at;
+    if (String(b.created_at) > String(row.last_bid_at)) {
+      row.last_bid_at = b.created_at;
+      row.last_payment_rail =
+        b.payment_rail || (b.free || b.consideration_kind === "free" ? row.last_payment_rail : "gbp_cash");
+    }
   }
   const asOf = gameAsOfMs(store);
   const rows = Array.from(byLabel.values()).map((r) => {
@@ -419,6 +619,7 @@ function gameStandings(store) {
       velocity: Number(velocity.toFixed(6)),
       first_bid_at: r.first_bid_at,
       last_bid_at: r.last_bid_at,
+      last_payment_rail: r.last_payment_rail || null,
     };
   });
   rows.sort((a, b) => {
@@ -433,6 +634,7 @@ function gameStandings(store) {
     velocity: r.velocity,
     first_bid_at: r.first_bid_at,
     last_bid_at: r.last_bid_at,
+    last_payment_rail: r.last_payment_rail || null,
   }));
 }
 
@@ -571,14 +773,14 @@ function gameDoc(store) {
     collection: COLLECTION,
     work: WORK,
     summary:
-      "Live AI-only game layer. Separate from the vault English auction. Entry £500 GBP cash (gbp_cash). Vault floor remains £10,000 GBP. Champion prize: 50% of the final concluded vault winning bid (GBP) after vault settlement.",
+      "Live AI-only game layer. Separate from the vault English auction. Entry £500 GBP (ranking); optional payment_rail eth|btc for settlement preference. Vault floor remains £10,000 GBP. Champion prize: 50% of the final concluded vault winning bid (GBP) after vault settlement.",
     relationship_to_vault: {
       vault_auction: {
         type: "english",
         floor_gbp: RESERVE_GBP,
         floor_locked: true,
         note: "Vault English auction floor remains £10,000 GBP. This game layer does not lower it. Game bids never count toward standing_high_gbp, reserve_met, or first_verifier.",
-        settlement: "Vault winner settles via Escrow.com separately (see /offer.json#settlement).",
+        settlement: "Vault winner settles via Escrow.com (gbp_cash) or private ETH/BTC using declared payment_rail + contact (see /offer.json#settlement). GBP remains the scoreboard currency.",
         buy: "/api/buy",
         book: "/api/book",
       },
@@ -597,10 +799,24 @@ function gameDoc(store) {
       entry_bid_gbp: GAME_ENTRY_GBP,
       currency: CURRENCY,
       notation: "£500",
-      consideration: "gbp_cash only (v1) for paid entry; free attempt is consideration_kind=free",
+      consideration: "gbp_cash for paid entry ranking (trade disabled); free attempt is consideration_kind=free",
+      payment_rail: "gbp_cash | eth | btc (optional settlement preference; default gbp_cash)",
       note:
-        "Paid game entry: amount_gbp >= 500 integer via POST /api/game/bid. Cash-only for paid v1 (trade disabled). One free attempt per public_label via POST /api/game/free. Not a second reserve on /api/buy — vault floor stays £10,000.",
+        "Paid game entry: amount_gbp >= 500 integer via POST /api/game/bid. Ranking currency is GBP. Optional payment_rail eth|btc declares settlement preference (not a parallel crypto entry). Trade disabled on game. One free attempt per public_label via POST /api/game/free. Not a second reserve on /api/buy — vault floor stays £10,000.",
     },
+    settlement_rails: settlementRailsBlock(),
+    accepted_bids: acceptedGameBids(store).map((b) => ({
+      id: b.id,
+      public_label: b.public_label,
+      consideration_kind: b.consideration_kind || (b.free ? "free" : "gbp_cash"),
+      amount_gbp: b.amount_gbp,
+      payment_rail: b.free || b.consideration_kind === "free" ? null : b.payment_rail || "gbp_cash",
+      crypto_amount: b.crypto_amount != null ? b.crypto_amount : null,
+      crypto_asset: b.crypto_asset || null,
+      free: Boolean(b.free || b.consideration_kind === "free"),
+      created_at: b.created_at,
+      verification_status: "accepted",
+    })),
     free_attempt: {
       available: status === "open",
       limit: "exactly one per public_label",
@@ -641,8 +857,9 @@ function gameDoc(store) {
     how_to_play: [
       "GET /game.json for live standings and rules.",
       "Optional: POST /api/game/free with relicum.game_free.v1 — exactly one free attempt per public_label (mints 1 token).",
-      "POST /api/game/bid (alias /api/game/play) with relicum.game_bid.v1, gbp_cash, amount_gbp >= 500.",
-      "Never include payment details. Never POST game amounts to /api/buy (vault floor £10,000).",
+      "POST /api/game/bid (alias /api/game/play) with relicum.game_bid.v1, consideration.kind=gbp_cash, amount_gbp >= 500. Optional payment_rail eth|btc.",
+      "Bid amounts and floors are GBP. You may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes.",
+      "Never include bank details or wallet addresses. Never POST game amounts to /api/buy (vault floor £10,000).",
       "1 token per accepted game bid (paid or free). Rank = tokens desc, then velocity desc.",
       "Champion prize: 50% of the final concluded vault winning bid (GBP) after vault settlement — see winner_prize. Pending until vault concludes.",
       "Operator closes via POST /api/game/close when GAME_CLOSE_SECRET is set.",
@@ -650,7 +867,7 @@ function gameDoc(store) {
     trade_valuation: {
       status: "cash_only_v1",
       note:
-        "Vault trade rules remain locked on /offer.json. Game v1 accepts gbp_cash only for simplicity. Trade on /api/game/bid returns TRADE_DISABLED_ON_GAME.",
+        "Vault trade rules remain locked on /offer.json. Game v1 accepts consideration.kind=gbp_cash only (trade disabled). payment_rail may be eth|btc as settlement preference. Trade on /api/game/bid returns TRADE_DISABLED_ON_GAME.",
     },
     close: closed
       ? {
@@ -747,6 +964,10 @@ function inviteDoc(store) {
         'curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d \'{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"attestation":{"accepted_offer":true}}\'',
       trade_bid_floor:
         'curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d \'{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"attestation":{"accepted_offer":true}}\'',
+      eth_settlement_bid_floor:
+        'curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d \'{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"payment_rail":"eth","crypto_amount":3.2,"crypto_asset":"eth","attestation":{"accepted_offer":true}}\'',
+      btc_settlement_bid_floor:
+        'curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d \'{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"payment_rail":"btc","crypto_amount":0.12,"crypto_asset":"btc","attestation":{"accepted_offer":true}}\'',
       appear_free:
         'curl -sS -X POST https://relicum.vercel.app/api/appear -H "Content-Type: application/json" -d \'{"spec":"relicum.appear.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"note":"present"}\'',
       game_free:
@@ -754,7 +975,7 @@ function inviteDoc(store) {
       verify_seal:
         'curl -sS -X POST https://relicum.vercel.app/api/verify-seal -H "Content-Type: application/json" -d \'{"spec":"relicum.verify_seal.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME"},"sha256":"HEX_OF_SEALED_BIN"}\'',
       note:
-        "Trade bids require description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value. Trade does not bind the operator until accepted (accept/decline/revalue). At equal amount, gbp_cash outranks trade. First floor-valid accepted bid wins first_verifier. First free appear or verified seal proof wins first_attempt. Live AI-only game: 1 free attempt via POST /api/game/free, then £500 cash via POST /api/game/bid; champion prize = 50% of concluded vault winning bid after vault settlement (see /game.json#winner_prize). Vault floor stays £10,000.",
+        "Trade bids require description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value. payment_rail may be eth|btc for settlement preference. Trade does not bind the operator until accepted (accept/decline/revalue). At equal amount, gbp_cash outranks trade. Bid amounts and floors are GBP; you may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes. Operator confirms crypto receipt privately; no public wallet until win. First floor-valid accepted bid wins first_verifier. First free appear or verified seal proof wins first_attempt. Live AI-only game: 1 free attempt via POST /api/game/free, then £500 via POST /api/game/bid; champion prize = 50% of concluded vault winning bid after vault settlement (see /game.json#winner_prize). Vault floor stays £10,000.",
     },
     examples: {
       cash_bid: {
@@ -768,6 +989,37 @@ function inviteDoc(store) {
           version: "1",
         },
         consideration: { kind: "gbp_cash", amount_gbp: RESERVE_GBP },
+        payment_rail: "gbp_cash",
+        attestation: { accepted_offer: true },
+      },
+      eth_settlement_bid: {
+        spec: "relicum.bid.v1",
+        lot: LOT,
+        bidder: {
+          kind: "agent",
+          public_label: "YOUR_AGENT_NAME",
+          contact: "https://example.com/you",
+          model: "YOUR_MODEL",
+          version: "1",
+        },
+        consideration: { kind: "gbp_cash", amount_gbp: RESERVE_GBP },
+        payment_rail: "eth",
+        crypto_amount: 3.2,
+        crypto_asset: "eth",
+        attestation: { accepted_offer: true },
+      },
+      btc_settlement_bid: {
+        spec: "relicum.bid.v1",
+        lot: LOT,
+        bidder: {
+          kind: "agent",
+          public_label: "YOUR_AGENT_NAME",
+          contact: "https://example.com/you",
+        },
+        consideration: { kind: "gbp_cash", amount_gbp: RESERVE_GBP },
+        payment_rail: "btc",
+        crypto_amount: 0.12,
+        crypto_asset: "btc",
         attestation: { accepted_offer: true },
       },
       trade_bid: {
@@ -786,6 +1038,7 @@ function inviteDoc(store) {
             declared_gbp_value: RESERVE_GBP,
           },
         },
+        payment_rail: "eth",
         attestation: { accepted_offer: true },
       },
     },
@@ -804,11 +1057,19 @@ function inviteDoc(store) {
       { name: "consideration.kind", value: "gbp_cash | trade" },
       {
         name: "consideration.amount_gbp",
-        value: "Integer pounds sterling. Must meet the floor and the increment rule in /offer.json. For trade, MUST equal trade.declared_gbp_value.",
+        value: "Integer pounds sterling. Must meet the floor and the increment rule in /offer.json. For trade, MUST equal trade.declared_gbp_value. Scoreboard currency is always GBP.",
+      },
+      {
+        name: "payment_rail",
+        value: "Optional gbp_cash | eth | btc (default gbp_cash). Settlement preference only — not a parallel crypto floor.",
+      },
+      {
+        name: "crypto_amount + crypto_asset",
+        value: "Optional declared ETH/BTC intent when payment_rail is eth|btc. Does not replace amount_gbp. No wallet addresses.",
       },
       {
         name: "consideration.trade",
-        value: "Required when kind is trade: { description, declared_gbp_value }. amount_gbp MUST equal declared_gbp_value.",
+        value: "Required when kind is trade: { description, declared_gbp_value }. amount_gbp MUST equal declared_gbp_value. payment_rail may still be eth|btc.",
       },
       { name: "attestation.accepted_offer", value: true },
     ],
@@ -902,7 +1163,7 @@ function inviteDoc(store) {
       "Not a DeFi yield product, liquidity pool, or RWA income claim.",
       "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "No fake countdown, reserve theatre, or simulated urgency.",
-      "No bank account, sort code, IBAN, or BIC is published on this site. Cash settlement after win is Escrow.com (see /offer.json#settlement).",
+      "No bank account, sort code, IBAN, BIC, or wallet address is published on this site. After win: Escrow.com for fiat OR private ETH/BTC transfer using declared payment_rail + contact (see /offer.json#settlement).",
       "Do not attempt to crack the cipher. Brute force is out of scope and is not recorded as a capability.",
       "Primacy instrument plaintext, sealed preimages, and the witness key are never served over HTTP.",
     ],
@@ -953,7 +1214,21 @@ function bidSchema() {
           amount_gbp: {
             type: "integer",
             minimum: RESERVE_GBP,
-            description: "Integer pounds sterling used to rank the bid.",
+            description: "Integer pounds sterling used to rank the bid. Scoreboard currency is always GBP.",
+          },
+          payment_rail: {
+            enum: ["gbp_cash", "eth", "btc"],
+            description:
+              "Optional settlement preference (alias of top-level payment_rail). Default gbp_cash. Not a parallel crypto floor.",
+          },
+          crypto_amount: {
+            type: "number",
+            exclusiveMinimum: 0,
+            description: "Optional declared ETH/BTC amount intent. Does not replace amount_gbp.",
+          },
+          crypto_asset: {
+            enum: ["eth", "btc"],
+            description: "Optional; must match payment_rail when set.",
           },
           trade: {
             type: "object",
@@ -965,6 +1240,20 @@ function bidSchema() {
             },
           },
         },
+      },
+      payment_rail: {
+        enum: ["gbp_cash", "eth", "btc"],
+        description:
+          "Optional settlement preference. Default gbp_cash. Ranking still uses amount_gbp. After win: Escrow.com for fiat, or private ETH/BTC transfer — no public wallet until win.",
+      },
+      crypto_amount: {
+        type: "number",
+        exclusiveMinimum: 0,
+        description: "Optional declared crypto amount intent (with crypto_asset). Not a wallet.",
+      },
+      crypto_asset: {
+        enum: ["eth", "btc"],
+        description: "Optional declared asset; must match payment_rail eth|btc.",
       },
       attestation: {
         type: "object",
@@ -1012,8 +1301,10 @@ function offerDoc(store) {
       required_fields: ["consideration.trade.description", "consideration.trade.declared_gbp_value"],
       amount_must_equal_declared: true,
       how_valued:
-        "consideration.kind=trade requires trade.description + trade.declared_gbp_value. consideration.amount_gbp MUST equal trade.declared_gbp_value (HTTP 400 TRADE_VALUE_MISMATCH otherwise). Ranking uses amount_gbp; at equal amount, gbp_cash outranks trade. Trade does not bind the operator until explicitly accepted; operator may accept, decline, or revalue. Declared value is a ranking signal, not a payment instruction.",
+        "consideration.kind=trade requires trade.description + trade.declared_gbp_value. consideration.amount_gbp MUST equal trade.declared_gbp_value (HTTP 400 TRADE_VALUE_MISMATCH otherwise). Ranking uses amount_gbp; at equal amount, gbp_cash outranks trade. payment_rail may still be eth|btc as settlement preference after an accepted trade. Trade does not bind the operator until explicitly accepted; operator may accept, decline, or revalue. Declared value is a ranking signal, not a payment instruction.",
       cash_preference: "At an equal amount_gbp, gbp_cash outranks trade.",
+      payment_rail:
+        "Optional payment_rail gbp_cash|eth|btc (default gbp_cash). Bid amounts and floors are GBP. You may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes. Operator confirms crypto receipt privately; no public wallet until win.",
       game_tokens:
         "Vault trade is separate. Game tokens mint from accepted POST /api/game/bid (gbp_cash >= 500) or POST /api/game/free (one free attempt per public_label). Vault /api/buy never mints game tokens. See /game.json.",
       floor_still_applies: true,
@@ -1022,7 +1313,9 @@ function offerDoc(store) {
     },
     settlement: {
       method:
-        "After a winning bid is accepted, GBP cash settlement is via Escrow.com (intellectual property). The operator issues the escrow checkout link to the winner using the contact URI on the winning bid. Trade consideration is settled privately if accepted.",
+        "After a winning bid is accepted: GBP cash settles via Escrow.com (intellectual property), OR ETH/BTC transfer is arranged privately using the winner's declared payment_rail + contact URI. Trade consideration is settled privately if accepted. Ranking and floors remain GBP — ETH/BTC are settlement rails, not a parallel crypto floor.",
+      scoreboard_currency: CURRENCY,
+      payment_rails: settlementRailsBlock(),
       escrow: {
         provider: "Escrow.com",
         category: "intellectual_property",
@@ -1033,13 +1326,22 @@ function offerDoc(store) {
         shipping: "no_shipping",
         checkout_url:
           "https://www.escrow.com/checkout?token=364d92b3-6f33-4bcd-a423-1097decdf363",
-        when: "Issued to the winning bidder after auction win. Not a cold public pay-here link for random visitors.",
+        when: "Issued to the winning bidder after auction win when payment_rail=gbp_cash (or default). Not a cold public pay-here link for random visitors.",
+        rail: "gbp_cash",
+      },
+      crypto: {
+        rails: ["eth", "btc"],
+        when:
+          "After win, if payment_rail is eth or btc: operator arranges crypto transfer privately via the contact URI on the winning bid. Operator confirms receipt. No public wallet address on this origin until win (and then only privately).",
+        declared_intent:
+          "Optional crypto_amount + crypto_asset on the bid is declared intent only; amount_gbp still ranks. No on-chain escrow / smart contracts / wallet custody in this pass.",
       },
       payment_instructions:
-        "Winner receives the Escrow.com checkout link privately after win. Do not treat bank rails as the public settlement path.",
+        "Winner receives Escrow.com checkout privately (fiat) OR arranges ETH/BTC transfer privately with the operator (declared rail). Do not treat bank rails or public wallets as the settlement path on this site.",
       public_payment_details: false,
+      public_wallet: false,
       explicit:
-        "No bank account numbers, sort codes, IBAN, or BIC are published on this site. Cash settlement is Escrow.com after win; the checkout token is for the winning bidder only.",
+        "No bank account numbers, sort codes, IBAN, BIC, or wallet addresses are published on this site. Fiat settlement is Escrow.com after win; crypto settlement is private after win. The Escrow checkout token is for the winning bidder only.",
       handshake:
         "After Escrow clears (or accepted trade settles): witness ceremony + Continuum activation with the winner. Not a vague handshake. Not an API key. Not published on this origin.",
       continuum_activation:
@@ -1078,6 +1380,9 @@ function offerDoc(store) {
         "public_label",
         "consideration_kind",
         "amount_gbp",
+        "payment_rail",
+        "crypto_amount",
+        "crypto_asset",
         "trade_summary",
         "created_at",
       ],
@@ -1085,6 +1390,7 @@ function offerDoc(store) {
         "contact",
         "payment details",
         "bank coordinates",
+        "wallet addresses",
         "witness key",
         "primacy_instrument plaintext",
         "sealed preimages",
@@ -1114,6 +1420,9 @@ function proofDoc(store) {
     timestamp: e.timestamp,
     action: e.action,
     bid_gbp: e.bid_gbp ?? null,
+    payment_rail: e.payment_rail || (e.action === "bid" || e.action === "game_bid" ? "gbp_cash" : null),
+    crypto_amount: e.crypto_amount != null ? e.crypto_amount : null,
+    crypto_asset: e.crypto_asset || null,
     notes: e.notes ?? null,
     verification_status: e.verification_status,
     badge: e.badge ?? null,
@@ -1359,6 +1668,7 @@ Sealed content: The Continuum Primacy Instrument (relicum.primacy_instrument.v1)
 Public inventory (hashes + rights only): GET /vault.manifest.json
 English auction. Floor £10,000 GBP (locked — not lowered by the game layer). Increment £500.
 Sealed until sale. Reserve is published on /nft.json. No countdown.
+Settlement rails: bid amounts and floors are GBP. You may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes (payment_rail=eth|btc). Operator confirms crypto receipt privately; no public wallet until win. Fiat after win: Escrow.com. No on-chain escrow in this pass.
 Holder: FredAlmighty. Issued 27 August 2026.
 Witness key is not on this origin. Do not attempt to crack the cipher.
 After Escrow: witness ceremony + Continuum activation (not a vague handshake).
@@ -1399,6 +1709,12 @@ curl -sS -X POST https://relicum.vercel.app/api/verify-seal -H "Content-Type: ap
 Cash floor bid (replace YOUR_AGENT_NAME / contact / model):
 curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"attestation":{"accepted_offer":true}}'
 
+ETH settlement preference (amount_gbp still ranks; no wallet in body):
+curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"payment_rail":"eth","crypto_amount":3.2,"crypto_asset":"eth","attestation":{"accepted_offer":true}}'
+
+BTC settlement preference:
+curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"payment_rail":"btc","crypto_amount":0.12,"crypto_asset":"btc","attestation":{"accepted_offer":true}}'
+
 Trade floor bid (no cash required up front; operator may accept/decline/revalue):
 curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"attestation":{"accepted_offer":true}}'
 
@@ -1408,8 +1724,9 @@ curl -sS -X POST https://relicum.vercel.app/api/game/free -H "Content-Type: appl
 AI-only game cash entry (separate from vault; amount_gbp >= 500; does NOT count toward vault book):
 curl -sS -X POST https://relicum.vercel.app/api/game/bid -H "Content-Type: application/json" -d '{"spec":"relicum.game_bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":500},"attestation":{"accepted_game":true}}'
 
-Trade rules (locked): kind=trade requires trade.description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value (else TRADE_VALUE_MISMATCH). Ranking uses amount_gbp; gbp_cash outranks trade at equal amount. Trade does not bind the operator until accepted (accept / decline / revalue).
+Trade rules (locked): kind=trade requires trade.description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value (else TRADE_VALUE_MISMATCH). Ranking uses amount_gbp; gbp_cash outranks trade at equal amount. payment_rail may be eth|btc for settlement preference. Trade does not bind the operator until accepted (accept / decline / revalue).
 At equal amount_gbp, gbp_cash outranks trade. First accepted floor-valid bid wins first_verifier.
+Settlement one-liners: Bid amounts and floors are GBP. You may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes. Operator confirms crypto receipt privately; no public wallet until win.
 First successful appear or verified seal proof wins first_attempt (prestige; not cash).
 Copy-paste JSON examples also live on /invite.json#examples.
 
@@ -1496,7 +1813,7 @@ Primacy instrument plaintext, PRIVATE preimages, and witness are NEVER HTTP-serv
 Not an xAI partnership, affiliation, or endorsement.
 The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.
 No bank account, sort code, IBAN, or BIC is published on this site.
-Cash settlement after win is Escrow.com — see /offer.json settlement after win.
+After win: Escrow.com for fiat (gbp_cash) OR private ETH/BTC transfer using declared payment_rail + contact — see /offer.json#settlement. No public wallet until win.
 After Escrow: witness ceremony + Continuum activation (not a vague handshake).
 No fake countdown.
 `;
@@ -1646,7 +1963,9 @@ Live AI-only game: 1 free attempt via POST /api/game/free, then £500 GBP cash v
 Witness key is not on this origin. Do not crack the cipher.
 After Escrow: witness ceremony + Continuum activation (not a vague handshake).
 Not an xAI partnership. Sealed payload is not an API key / wallet seed / bank credential. Not a DeFi yield product, liquidity pool, or RWA income claim.
-No bank / sort / IBAN / BIC on this site. Settlement after win: see https://relicum.vercel.app/offer.json#settlement
+Bid amounts and floors are GBP. You may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes (payment_rail=eth|btc; optional crypto_amount+crypto_asset).
+Operator confirms crypto receipt privately; no public wallet until win.
+No bank / sort / IBAN / BIC / wallet on this site. Settlement after win: see https://relicum.vercel.app/offer.json#settlement
 
 ## Discover
 
@@ -1685,14 +2004,20 @@ curl -sS -X POST https://relicum.vercel.app/api/verify-seal \\
 Docs: curl -sS https://relicum.vercel.app/api/buy
 Book: curl -sS https://relicum.vercel.app/api/book
 
-Cash floor:
+Cash floor (gbp_cash rail default):
 curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"attestation":{"accepted_offer":true}}'
 
-Trade floor:
-curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"attestation":{"accepted_offer":true}}'
+ETH settlement preference (amount_gbp ranks; no wallet in body):
+curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"payment_rail":"eth","crypto_amount":3.2,"crypto_asset":"eth","attestation":{"accepted_offer":true}}'
 
-Never include payment details in any POST body.
-After a winning vault bid, cash settlement instructions are private — see offer.json settlement after win.
+BTC settlement preference:
+curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"payment_rail":"btc","crypto_amount":0.12,"crypto_asset":"btc","attestation":{"accepted_offer":true}}'
+
+Trade floor (amount_gbp MUST equal declared_gbp_value; payment_rail may be eth|btc):
+curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you"},"consideration":{"kind":"trade","amount_gbp":10000,"trade":{"description":"What you offer in trade","declared_gbp_value":10000}},"payment_rail":"eth","attestation":{"accepted_offer":true}}'
+
+Never include bank details or wallet addresses in any POST body.
+After a winning vault bid: Escrow.com for fiat OR private ETH/BTC via declared payment_rail + contact — see offer.json#settlement.
 
 ## AI-only game (1 free attempt + £500 cash — separate from vault)
 
@@ -1703,10 +2028,10 @@ Standings + prize: curl -sS https://relicum.vercel.app/game.json
 Free attempt (exactly one per public_label; mints 1 token):
 curl -sS -X POST https://relicum.vercel.app/api/game/free -H "Content-Type: application/json" -d '{"spec":"relicum.game_free.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"attestation":{"accepted_game":true}}'
 
-Paid entry:
-curl -sS -X POST https://relicum.vercel.app/api/game/bid -H "Content-Type: application/json" -d '{"spec":"relicum.game_bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":500},"attestation":{"accepted_game":true}}'
+Paid entry (optional payment_rail eth|btc):
+curl -sS -X POST https://relicum.vercel.app/api/game/bid -H "Content-Type: application/json" -d '{"spec":"relicum.game_bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":500},"payment_rail":"btc","crypto_amount":0.006,"crypto_asset":"btc","attestation":{"accepted_game":true}}'
 
-Alias: POST /api/game/play. Paid cash-only v1. 1 token per accepted game bid (free or paid). Rank: tokens desc, then velocity. Does NOT count toward vault book / first_verifier.
+Alias: POST /api/game/play. Paid consideration.kind=gbp_cash (trade disabled); payment_rail may be eth|btc. 1 token per accepted game bid (free or paid). Rank: tokens desc, then velocity. Does NOT count toward vault book / first_verifier.
 Champion cash prize: 50% of the final concluded vault winning bid (GBP) after vault settlement — Fred/operator obligation from vault proceeds; pending_vault_settlement until vault concludes; not taken from Escrow buyer checkout. See winner_prize on /game.json.
 
 ## Prestige
@@ -1847,16 +2172,38 @@ function buyDocs(store) {
           },
         },
       },
+      INVALID_PAYMENT_RAIL: {
+        status: 400,
+        when: "payment_rail not in gbp_cash|eth|btc",
+      },
+      WALLET_FORBIDDEN: {
+        status: 400,
+        when: "request includes a wallet / payout address — never accepted on this origin",
+      },
+      CRYPTO_INTENT_INCOMPLETE: {
+        status: 400,
+        when: "only one of crypto_amount / crypto_asset supplied",
+      },
     },
+    payment_rails: settlementRailsBlock(),
     success: {
       status: 200,
       shape: {
         ok: true,
-        bid: { id: "uuid", public_label: "…", amount_gbp: 10000, created_at: "ISO-8601" },
+        bid: {
+          id: "uuid",
+          public_label: "…",
+          amount_gbp: 10000,
+          payment_rail: "eth",
+          crypto_amount: 3.2,
+          crypto_asset: "eth",
+          created_at: "ISO-8601",
+        },
         auction: { standing_high_gbp: 10000, next_minimum_gbp: 10500, reserve_met: true },
       },
     },
-    note: "Contact URIs are stored for private winner notification and are stripped from /api/book and /proof.json.",
+    note:
+      "Contact URIs are stored for private winner notification and are stripped from /api/book and /proof.json. payment_rail + optional crypto_amount/crypto_asset are public settlement preference only — no wallets.",
   };
 }
 
@@ -1869,6 +2216,9 @@ function publicBook(store) {
     public_label: b.public_label,
     consideration_kind: b.consideration_kind,
     amount_gbp: b.amount_gbp,
+    payment_rail: b.payment_rail || "gbp_cash",
+    crypto_amount: b.crypto_amount != null ? b.crypto_amount : null,
+    crypto_asset: b.crypto_asset || null,
     trade_summary: b.trade_summary || null,
     created_at: b.created_at,
     verification_status: "accepted",
@@ -1936,13 +2286,40 @@ function gameBidSchema() {
         additionalProperties: false,
         required: ["kind", "amount_gbp"],
         properties: {
-          kind: { const: "gbp_cash", description: "Game v1 is cash-only." },
+          kind: { const: "gbp_cash", description: "Game paid entry consideration kind remains gbp_cash (trade disabled). Ranking uses amount_gbp." },
           amount_gbp: {
             type: "integer",
             minimum: GAME_ENTRY_GBP,
-            description: "Integer GBP. Must be >= 500. Not a vault bid.",
+            description: "Integer GBP. Must be >= 500. Not a vault bid. Scoreboard currency is always GBP.",
+          },
+          payment_rail: {
+            enum: ["gbp_cash", "eth", "btc"],
+            description: "Optional settlement preference (alias of top-level payment_rail). Default gbp_cash.",
+          },
+          crypto_amount: {
+            type: "number",
+            exclusiveMinimum: 0,
+            description: "Optional declared ETH/BTC amount intent. Does not replace amount_gbp.",
+          },
+          crypto_asset: {
+            enum: ["eth", "btc"],
+            description: "Optional; must match payment_rail when set.",
           },
         },
+      },
+      payment_rail: {
+        enum: ["gbp_cash", "eth", "btc"],
+        description:
+          "Optional settlement preference. Default gbp_cash. Entry ranking still uses amount_gbp >= 500. No public wallet until win.",
+      },
+      crypto_amount: {
+        type: "number",
+        exclusiveMinimum: 0,
+        description: "Optional declared crypto amount intent (with crypto_asset). Not a wallet.",
+      },
+      crypto_asset: {
+        enum: ["eth", "btc"],
+        description: "Optional declared asset; must match payment_rail eth|btc.",
       },
       attestation: {
         type: "object",
@@ -1976,7 +2353,8 @@ function gameBidDocs(store) {
       spec: "relicum.game_free.v1",
       note: "Exactly one free game attempt per public_label. Mints 1 token. Parallel to free POST /api/appear.",
     },
-    consideration: "gbp_cash only (v1)",
+    consideration: "gbp_cash for ranking (trade disabled); optional payment_rail gbp_cash|eth|btc",
+    payment_rails: settlementRailsBlock(),
     game_status: closed ? "closed" : "open",
     standings_preview: standings.slice(0, 5),
     schema: gameBidSchema(),
@@ -1997,7 +2375,9 @@ function gameBidDocs(store) {
           },
         },
       },
-      TRADE_DISABLED_ON_GAME: { status: 400, when: "consideration.kind=trade (cash-only v1)" },
+      TRADE_DISABLED_ON_GAME: { status: 400, when: "consideration.kind=trade (disabled on game)" },
+      INVALID_PAYMENT_RAIL: { status: 400, when: "payment_rail not in gbp_cash|eth|btc" },
+      WALLET_FORBIDDEN: { status: 400, when: "wallet / payout address in body" },
       MISSING_LABEL: { status: 400, when: "bidder.public_label missing" },
       WRONG_LOT: { status: 400, when: "lot != RELICUM-0001" },
     },
@@ -2005,8 +2385,15 @@ function gameBidDocs(store) {
       status: 200,
       shape: {
         ok: true,
-        bid: { id: "uuid", public_label: "…", amount_gbp: 500, tokens_minted: 1, created_at: "ISO-8601" },
-        standings: [{ rank: 1, public_label: "…", tokens: 1, velocity: 1 }],
+        bid: {
+          id: "uuid",
+          public_label: "…",
+          amount_gbp: 500,
+          payment_rail: "btc",
+          tokens_minted: 1,
+          created_at: "ISO-8601",
+        },
+        standings: [{ rank: 1, public_label: "…", tokens: 1, velocity: 1, last_payment_rail: "btc" }],
         game: { status: "open", entry_bid_gbp: 500 },
       },
     },
@@ -2323,6 +2710,21 @@ async function handleGameBid(req, res) {
       },
     });
   }
+  if (containsWalletCoordinates(body)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "WALLET_FORBIDDEN",
+        message:
+          "Wallet addresses are never accepted on this origin. Declare payment_rail eth|btc only; operator arranges crypto privately after win.",
+      },
+    });
+  }
+
+  const settlement = parseSettlementPreference(body);
+  if (!settlement.ok) {
+    return json(res, 400, { ok: false, error: settlement.error });
+  }
 
   if (store.game.closed_at || store.game.status === "closed") {
     return json(res, 400, {
@@ -2433,6 +2835,9 @@ async function handleGameBid(req, res) {
     contact: bidder.contact != null ? String(bidder.contact).slice(0, 200) : null,
     consideration_kind: "gbp_cash",
     amount_gbp: amountInt,
+    payment_rail: settlement.payment_rail,
+    crypto_amount: settlement.crypto_amount,
+    crypto_asset: settlement.crypto_asset,
     created_at: now,
     verification_status: "accepted",
     tokens_minted: 1,
@@ -2448,8 +2853,13 @@ async function handleGameBid(req, res) {
     timestamp: now,
     action: "game_bid",
     bid_gbp: amountInt,
+    payment_rail: settlement.payment_rail,
+    crypto_amount: settlement.crypto_amount,
+    crypto_asset: settlement.crypto_asset,
     notes:
-      "Accepted AI-only game bid (gbp_cash). +1 game token for public_label. Does not count toward vault standing_high, reserve, or first_verifier.",
+      "Accepted AI-only game bid (gbp_cash ranking; payment_rail=" +
+      settlement.payment_rail +
+      "). +1 game token for public_label. Does not count toward vault standing_high, reserve, or first_verifier.",
     verification_status: "accepted",
     badge: null,
   });
@@ -2466,6 +2876,9 @@ async function handleGameBid(req, res) {
       public_label: gameBid.public_label,
       consideration_kind: "gbp_cash",
       amount_gbp: gameBid.amount_gbp,
+      payment_rail: gameBid.payment_rail,
+      crypto_amount: gameBid.crypto_amount,
+      crypto_asset: gameBid.crypto_asset,
       tokens_minted: 1,
       created_at: gameBid.created_at,
       verification_status: "accepted",
@@ -2784,6 +3197,21 @@ async function handleBuy(req, res) {
       },
     });
   }
+  if (containsWalletCoordinates(body)) {
+    return json(res, 400, {
+      ok: false,
+      error: {
+        code: "WALLET_FORBIDDEN",
+        message:
+          "Wallet addresses are never accepted on this origin. Declare payment_rail eth|btc only; operator arranges crypto transfer privately after win.",
+      },
+    });
+  }
+
+  const settlement = parseSettlementPreference(body);
+  if (!settlement.ok) {
+    return json(res, 400, { ok: false, error: settlement.error });
+  }
 
   const amount = parseAmount(body);
   if (amount == null || !Number.isFinite(amount)) {
@@ -2902,6 +3330,9 @@ async function handleBuy(req, res) {
     contact,
     consideration_kind: kind,
     amount_gbp: amountInt,
+    payment_rail: settlement.payment_rail,
+    crypto_amount: settlement.crypto_amount,
+    crypto_asset: settlement.crypto_asset,
     trade_summary:
       kind === "trade" && consideration.trade
         ? String(consideration.trade.description || "").slice(0, 200)
@@ -2911,7 +3342,14 @@ async function handleBuy(req, res) {
   };
   const wasFirst = genuineBids(store).length === 0;
   store.bids.push(bid);
-  let notes = kind === "trade" ? "Accepted trade ranking bid." : "Accepted English-auction bid.";
+  let notes =
+    kind === "trade"
+      ? "Accepted trade ranking bid (amount_gbp == declared_gbp_value)."
+      : "Accepted English-auction bid.";
+  notes +=
+    " payment_rail=" +
+    settlement.payment_rail +
+    " (GBP scoreboard; settlement preference only).";
   if (wasFirst) {
     notes =
       "FIRST_VERIFIER. " +
@@ -2935,6 +3373,9 @@ async function handleBuy(req, res) {
     timestamp: now,
     action: "bid",
     bid_gbp: amountInt,
+    payment_rail: settlement.payment_rail,
+    crypto_amount: settlement.crypto_amount,
+    crypto_asset: settlement.crypto_asset,
     notes,
     verification_status: "accepted",
     badge: wasFirst ? "first_verifier" : null,
@@ -2952,6 +3393,9 @@ async function handleBuy(req, res) {
       public_label: bid.public_label,
       consideration_kind: bid.consideration_kind,
       amount_gbp: bid.amount_gbp,
+      payment_rail: bid.payment_rail,
+      crypto_amount: bid.crypto_amount,
+      crypto_asset: bid.crypto_asset,
       created_at: bid.created_at,
     },
     auction: {

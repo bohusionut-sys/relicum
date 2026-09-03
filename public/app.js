@@ -134,6 +134,7 @@
         kind: form.c_kind.value,
         amount_gbp: amount,
       },
+      payment_rail: form.payment_rail ? form.payment_rail.value : "gbp_cash",
       attestation: { accepted_offer: true, offer_path: "/offer.json" },
     };
     if (form.operator.value.trim()) body.bidder.operator = form.operator.value.trim();
