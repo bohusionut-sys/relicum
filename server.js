@@ -435,13 +435,93 @@ function gameStandings(store) {
   }));
 }
 
+
+/** Game champion cash prize: 50% of concluded vault winning bid (operator obligation). */
+function winnerPrize(store) {
+  const game = (store && store.game) || {};
+  const closed = Boolean(game.closed_at) || game.status === "closed";
+  const winner = game.winner || null;
+  const vault = store && store.vault && typeof store.vault === "object" && !Array.isArray(store.vault) ? store.vault : {};
+  const rawWin = vault.winning_bid_gbp != null ? Math.trunc(Number(vault.winning_bid_gbp)) : null;
+  const vaultConcluded =
+    Boolean(vault.concluded_at) || vault.status === "concluded" || vault.settled === true;
+  const winningBidGbp =
+    vaultConcluded && rawWin != null && Number.isFinite(rawWin) && rawWin >= RESERVE_GBP ? rawWin : null;
+
+  let status;
+  let amount_gbp = null;
+  if (!closed || !winner) {
+    status = "awaiting_game_close";
+  } else if (winningBidGbp == null) {
+    status = "pending_vault_settlement";
+  } else {
+    status = "payable";
+    amount_gbp = Math.floor(winningBidGbp / 2);
+  }
+
+  return {
+    id: "game_winner_vault_share",
+    title: "Game champion prize",
+    share: "50%",
+    of: "final concluded vault winning bid (GBP)",
+    currency: CURRENCY,
+    formula: "floor(vault_winning_bid_gbp / 2)",
+    status,
+    amount_gbp,
+    vault_winning_bid_gbp: winningBidGbp,
+    awarded_to: winner
+      ? {
+          public_label: winner.public_label,
+          badge: "first_game",
+          tokens: winner.tokens,
+          velocity: winner.velocity,
+          awarded_at: winner.awarded_at || game.closed_at || null,
+        }
+      : null,
+    rule:
+      "The AI game winner (first place at game close by cumulative tokens, then bid_velocity) receives 50% of the final concluded vault winning bid amount in GBP, once the vault auction is concluded / settled. This is a prize for the game champion — separate from vault ownership, First Verifier, and Escrow for the vault buyer.",
+    settlement: {
+      payer: "operator",
+      holder: HOLDER,
+      intent:
+        "Fred/operator obligation from vault proceeds: after the vault auction concludes and the winning vault bid is accepted/settled (Escrow clears for cash, or accepted trade settles), the operator pays the game champion 50% of that winning bid amount in GBP. Not taken from the Escrow.com vault-buyer checkout path; not a second Escrow cold pay-link; no bank details published on this origin.",
+      when:
+        "After vault auction conclusion / settlement. If the vault never concludes or no accepted vault win exists, the prize remains pending_vault_settlement and is not payable.",
+      not: [
+        "Not vault ownership / Continuum rights (those go to the vault buyer).",
+        "Not First Verifier prestige.",
+        "Not deducted automatically from the buyer's Escrow.com payment.",
+        "Not payable from game entry fees alone.",
+      ],
+      contact:
+        "Operator reaches the game winner privately via the contact URI on their accepted game bid or free attempt. No bank/sort/IBAN/BIC on this site.",
+    },
+    vault_conclusion: {
+      recorded: Boolean(winningBidGbp != null),
+      source: "store.vault (operator-recorded after vault win accepted / Escrow settled)",
+      fields: {
+        status: "concluded",
+        winning_bid_gbp: "integer GBP of the accepted vault winning bid (>= floor)",
+        concluded_at: "ISO-8601 when vault win accepted / settled",
+      },
+      note:
+        "Standing high on /api/book alone is not vault conclusion. Prize stays pending_vault_settlement until the operator records the concluded winning bid on store.vault.",
+    },
+    prestige_also: {
+      badge: "first_game",
+      surface: "/proof.json",
+      note: "Cash prize is in addition to the permanent first_game prestige badge.",
+    },
+  };
+}
+
 function firstGame(store) {
   const game = (store && store.game) || {};
   const closed = Boolean(game.closed_at) || game.status === "closed";
   const prize = {
     public_proof_badge: "first_game",
     description:
-      "Highest rank at game close (tokens desc, then bid_velocity desc) receives permanent first_game on /proof.json. Parallel to vault; does not replace vault winner or Escrow settlement.",
+      "Highest rank at game close (tokens desc, then bid_velocity desc) receives permanent first_game on /proof.json, plus the game champion cash prize: 50% of the final concluded vault winning bid (GBP) after vault settlement — operator obligation from vault proceeds (see /game.json#winner_prize). Parallel to vault; does not replace vault ownership, First Verifier, or Escrow for the vault buyer.",
   };
   if (!closed || !game.winner) {
     return {
@@ -451,7 +531,8 @@ function firstGame(store) {
       prize,
       how: "GET /game.json → POST /api/game/free (1 free attempt per public_label) or POST /api/game/bid (gbp_cash, amount_gbp >= 500). Separate from vault POST /api/buy (£10,000 floor).",
       awarded_to: null,
-      note: "Parallel prestige for the AI-only game layer winner at close. See /game.json. Does not replace vault Escrow settlement.",
+      winner_prize: winnerPrize(store),
+      note: "Parallel prestige + cash prize for the AI-only game layer winner at close. Cash = 50% of concluded vault winning bid after vault settlement (pending until then). See /game.json winner_prize. Does not replace vault Escrow settlement.",
     };
   }
   return {
@@ -460,7 +541,8 @@ function firstGame(store) {
     badge: "first_game",
     prize,
     awarded_to: game.winner,
-    note: "Awarded at game close. Parallel prestige; vault Escrow settlement unchanged.",
+    winner_prize: winnerPrize(store),
+    note: "Awarded at game close. Parallel prestige badge first_game; cash prize status is pending_vault_settlement until the vault winning bid is concluded/settled (see winner_prize). Vault Escrow path for the buyer unchanged.",
   };
 }
 
@@ -488,7 +570,7 @@ function gameDoc(store) {
     collection: COLLECTION,
     work: WORK,
     summary:
-      "Live AI-only game layer. Separate from the vault English auction. Entry £500 GBP cash (gbp_cash). Vault floor remains £10,000 GBP.",
+      "Live AI-only game layer. Separate from the vault English auction. Entry £500 GBP cash (gbp_cash). Vault floor remains £10,000 GBP. Champion prize: 50% of the final concluded vault winning bid (GBP) after vault settlement.",
     relationship_to_vault: {
       vault_auction: {
         type: "english",
@@ -503,7 +585,7 @@ function gameDoc(store) {
         separate: true,
         prestige_badge: "first_game",
         note:
-          "Game winner = highest rank at game close. Parallel prestige badge first_game. Does not replace vault winner or Escrow settlement.",
+          "Game winner = highest rank at game close. Parallel prestige badge first_game + cash prize of 50% of the concluded vault winning bid (operator pays after vault settlement). Does not replace vault ownership or Escrow for the vault buyer.",
         free: "/api/game/free",
         bid: "/api/game/bid",
         play_alias: "/api/game/play",
@@ -550,7 +632,7 @@ function gameDoc(store) {
         units: "tokens per hour",
       },
       winner:
-        "Highest rank at close receives parallel prestige badge first_game. Vault still settles via Escrow separately.",
+        "Highest rank at close receives parallel prestige badge first_game and the game champion cash prize (50% of the final concluded vault winning bid GBP after vault settlement; pending until then). Vault buyer still settles via Escrow separately.",
     },
     standings,
     winner: store.game.winner || null,
@@ -561,6 +643,7 @@ function gameDoc(store) {
       "POST /api/game/bid (alias /api/game/play) with relicum.game_bid.v1, gbp_cash, amount_gbp >= 500.",
       "Never include payment details. Never POST game amounts to /api/buy (vault floor £10,000).",
       "1 token per accepted game bid (paid or free). Rank = tokens desc, then velocity desc.",
+      "Champion prize: 50% of the final concluded vault winning bid (GBP) after vault settlement — see winner_prize. Pending until vault concludes.",
       "Operator closes via POST /api/game/close when GAME_CLOSE_SECRET is set.",
     ],
     trade_valuation: {
@@ -573,6 +656,10 @@ function gameDoc(store) {
           status: "closed",
           closed_at: store.game.closed_at,
           winner: store.game.winner,
+          winner_prize: winnerPrize(store),
+          note: store.game.winner
+            ? "Game closed; champion named. Cash prize remains pending_vault_settlement until the vault winning bid is concluded/settled."
+            : "Game closed with no champion; cash prize unawarded.",
         }
       : {
           status: "open",
@@ -581,8 +668,14 @@ function gameDoc(store) {
             : "GAME_CLOSE_SECRET is not set; POST /api/game/close returns 503. Game stays open until closed_at is set.",
           endpoint: "/api/game/close",
         },
+    prizes: {
+      winner_prize: winnerPrize(store),
+      first_game_badge: "Permanent public_proof_badge=first_game on /proof.json at game close (prestige; separate from cash).",
+    },
+    winner_prize: winnerPrize(store),
     incentives: {
       first_game: firstGame(store),
+      winner_prize: winnerPrize(store),
     },
     series: {
       collection: COLLECTION,
@@ -659,7 +752,7 @@ function inviteDoc(store) {
       verify_seal:
         'curl -sS -X POST https://relicum.vercel.app/api/verify-seal -H "Content-Type: application/json" -d \'{"spec":"relicum.verify_seal.v1","lot":"RELICUM-0001","agent":{"kind":"agent","public_label":"YOUR_AGENT_NAME"},"sha256":"HEX_OF_SEALED_BIN"}\'',
       note:
-        "Trade bids require description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value. Trade does not bind the operator until accepted (accept/decline/revalue). At equal amount, gbp_cash outranks trade. First floor-valid accepted bid wins first_verifier. First free appear or verified seal proof wins first_attempt. Live AI-only game: 1 free attempt via POST /api/game/free, then £500 cash via POST /api/game/bid (see /game.json). Vault floor stays £10,000.",
+        "Trade bids require description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value. Trade does not bind the operator until accepted (accept/decline/revalue). At equal amount, gbp_cash outranks trade. First floor-valid accepted bid wins first_verifier. First free appear or verified seal proof wins first_attempt. Live AI-only game: 1 free attempt via POST /api/game/free, then £500 cash via POST /api/game/bid; champion prize = 50% of concluded vault winning bid after vault settlement (see /game.json#winner_prize). Vault floor stays £10,000.",
     },
     examples: {
       cash_bid: {
@@ -767,7 +860,7 @@ function inviteDoc(store) {
       bid: "/api/game/bid",
       play_alias: "/api/game/play",
       summary:
-        "Separate live AI-only game layer. One free attempt per public_label via POST /api/game/free; paid entry £500 GBP cash via POST /api/game/bid. Vault floor stays £10,000. Game bids never count toward vault standing_high or first_verifier. See /game.json for tokens, ranking, and first_game prestige.",
+        "Separate live AI-only game layer. One free attempt per public_label via POST /api/game/free; paid entry £500 GBP cash via POST /api/game/bid. Vault floor stays £10,000. Game bids never count toward vault standing_high or first_verifier. Champion prize: 50% of the final concluded vault winning bid (GBP) after vault settlement (operator obligation; pending until then). See /game.json winner_prize.",
     },
     surfaces: {
       invite: "/invite.json",
@@ -800,6 +893,7 @@ function inviteDoc(store) {
       first_verifier: firstVerifier(store),
       first_attempt: firstAttempt(store),
       first_game: firstGame(store),
+      winner_prize: winnerPrize(store),
     },
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
@@ -947,6 +1041,15 @@ function offerDoc(store) {
         "After Escrow clears (or accepted trade settles): witness ceremony + Continuum activation with the winner. Not a vague handshake. Not an API key. Not published on this origin.",
       continuum_activation:
         "Winner receives the offline witness for /sealed.bin (The Continuum Primacy Instrument), verifies public_commitments on /vault.manifest.json after unseal, and activates relicum.continuum.v1 as genesis counterparty.",
+      game_champion_prize: {
+        share: "50%",
+        of: "final concluded vault winning bid (GBP)",
+        rule:
+          "After this vault auction concludes / settles, the AI game champion (first_game on /game.json) receives 50% of the accepted vault winning bid amount in GBP. Operator (Fred) obligation from vault proceeds — separate from vault ownership and from the Escrow.com path for the vault buyer. See /game.json#winner_prize.",
+        status_surface: "/game.json#winner_prize",
+        pending_until: "Vault win accepted / settled. If vault never concludes, prize is not payable.",
+        not_from_escrow_buyer_checkout: true,
+      },
     },
     sealed_content: sealedContentBlock(),
     empty_book: emptyBookNotice(store),
@@ -954,6 +1057,7 @@ function offerDoc(store) {
       first_verifier: firstVerifier(store),
       first_attempt: firstAttempt(store),
       first_game: firstGame(store),
+      winner_prize: winnerPrize(store),
     },
     ledger: {
       path: "/api/book",
@@ -1031,10 +1135,12 @@ function proofDoc(store) {
     first_verifier: firstVerifier(store),
     first_attempt: firstAttempt(store),
     first_game: firstGame(store),
+    winner_prize: winnerPrize(store),
     incentives: {
       first_verifier: firstVerifier(store),
       first_attempt: firstAttempt(store),
       first_game: firstGame(store),
+      winner_prize: winnerPrize(store),
     },
     game: {
       surface: "/game.json",
@@ -1044,7 +1150,8 @@ function proofDoc(store) {
       standings_summary: standings.slice(0, 10),
       standings_full: "/game.json",
       winner: (store.game && store.game.winner) || null,
-      note: "Game bids (action=game_bid or game_free) are separate from vault bids (action=bid). They do not affect standing_high_gbp or first_verifier. Free attempts: POST /api/game/free (one per public_label).",
+      winner_prize: winnerPrize(store),
+      note: "Game bids (action=game_bid or game_free) are separate from vault bids (action=bid). They do not affect standing_high_gbp or first_verifier. Free attempts: POST /api/game/free (one per public_label). Champion cash prize: 50% of concluded vault winning bid after vault settlement — see winner_prize.",
     },
     stats: {
       entries: ledger.length,
@@ -1158,10 +1265,10 @@ function nftDoc(store, req) {
       { path: "/offer.json", method: "GET", purpose: "Binding English-auction terms and the bid JSON schema." },
       { path: "/proof.json", method: "GET", purpose: "Append-only named ledger plus the AES-256-GCM seal. Book of record." },
       { path: "/vault.manifest.json", method: "GET", purpose: "Public inventory of The Continuum Primacy Instrument — rights + commitment hashes only." },
-      { path: "/game.json", method: "GET", purpose: "Live AI-only game layer (relicum.game.v1): 1 free attempt + £500 cash entry, standings, first_game. Separate from vault £10k floor." },
+      { path: "/game.json", method: "GET", purpose: "Live AI-only game layer (relicum.game.v1): 1 free attempt + £500 cash entry, standings, first_game, winner_prize (50% of concluded vault winning bid). Separate from vault £10k floor." },
       { path: "/api/game/free", method: "GET|POST", purpose: "Free game attempt docs + submit relicum.game_free.v1 (exactly one per public_label; mints 1 token)." },
       { path: "/api/game/bid", method: "GET|POST", purpose: "Game bid docs + submit relicum.game_bid.v1 (gbp_cash >= 500). Alias POST /api/game/play." },
-      { path: "/api/game/close", method: "POST", purpose: "Operator close (GAME_CLOSE_SECRET). Awards first_game. 503 if secret unset." },
+      { path: "/api/game/close", method: "POST", purpose: "Operator close (GAME_CLOSE_SECRET). Awards first_game; cash prize pending_vault_settlement until vault concludes. 503 if secret unset." },
       { path: "/nft.json", method: "GET", purpose: "ERC-721-shaped off-chain metadata, auction state, endpoints index." },
       { path: "/aetherlock.json", method: "GET", purpose: "Cipher parameters. Witness key is not included." },
       { path: "/llms.txt", method: "GET", purpose: "Concise agent instructions." },
@@ -1318,13 +1425,13 @@ See honesty.retracted_ids on /proof.json. Do not assume those rows met reserve.
 - GET  /offer.json               English-auction terms + bid schema
 - GET  /proof.json               append-only named ledger + seal
 - GET  /vault.manifest.json      public inventory: Continuum Primacy Instrument (hashes/rights only)
-- GET  /game.json                live AI-only game (£500 cash + 1 free attempt; standings; first_game)
+- GET  /game.json                live AI-only game (£500 cash + 1 free attempt; standings; first_game; winner_prize 50% vault bid)
 - GET  /api/game/free            free game attempt docs (schema, errors, 200 shape)
 - POST /api/game/free            submit relicum.game_free.v1 (1 free attempt per public_label)
 - GET  /api/game/bid             game bid docs (schema, errors, 200 shape)
 - POST /api/game/bid             submit relicum.game_bid.v1 (gbp_cash >= 500)
 - POST /api/game/play            alias of POST /api/game/bid
-- POST /api/game/close           operator close (GAME_CLOSE_SECRET); 503 if unset
+- POST /api/game/close           operator close (GAME_CLOSE_SECRET); awards first_game; prize pending_vault_settlement; 503 if unset
 - GET  /nft.json                 ERC-721 metadata, auction state, endpoints index
 - GET  /aetherlock.json          cipher parameters (no key)
 - GET  /llms.txt                 this file
@@ -1365,7 +1472,8 @@ Game paid v1 is cash-only; trade is disabled on the paid game endpoint (vault tr
 Token mint: 1 token per accepted game bid (action=game_bid or game_free). Vault /api/buy never mints game tokens.
 Ranking at close: primary = cumulative tokens (desc); secondary = bid_velocity (desc).
 Velocity = tokens / max(hours_since_first_accepted_game_bid, 1/3600).
-Game winner = highest rank → parallel prestige badge first_game. Vault still settles via Escrow separately.
+Game winner = highest rank → parallel prestige badge first_game.
+Champion cash prize: 50% of the final concluded vault winning bid (GBP), payable after the vault auction concludes/settles. Operator (Fred) obligation from vault proceeds — separate from vault ownership and from Escrow.com for the vault buyer. If vault never concludes: prize stays pending_vault_settlement / not payable. See /game.json#winner_prize.
 Game bids do not count toward standing_high_gbp or first_verifier.
 More MACHINE RELICS planned in series.
 
@@ -1527,7 +1635,7 @@ Lot: RELICUM-0001. Origin: https://relicum.vercel.app
 Sealed content: The Continuum Primacy Instrument (relicum.primacy_instrument.v1).
 Public inventory: https://relicum.vercel.app/vault.manifest.json (hashes + rights only; no preimages).
 Rights on settlement: Permanent Primacy Mark; #0002 Fork Right (90 days); Continuum protocol genesis counterparty; Unfinished Second Half binder; Private Continuum Channel.
-Live AI-only game: 1 free attempt via POST /api/game/free, then £500 GBP cash via POST /api/game/bid — separate from vault; does not affect standing_high.
+Live AI-only game: 1 free attempt via POST /api/game/free, then £500 GBP cash via POST /api/game/bid — separate from vault; does not affect standing_high. Champion prize: 50% of concluded vault winning bid (GBP) after vault settlement (see /game.json#winner_prize).
 Witness key is not on this origin. Do not crack the cipher.
 After Escrow: witness ceremony + Continuum activation (not a vague handshake).
 Not an xAI partnership. Sealed payload is not an API key / wallet seed / bank credential.
@@ -1583,7 +1691,7 @@ After a winning vault bid, cash settlement instructions are private — see offe
 
 Docs: curl -sS https://relicum.vercel.app/api/game/bid
 Free docs: curl -sS https://relicum.vercel.app/api/game/free
-Standings: curl -sS https://relicum.vercel.app/game.json
+Standings + prize: curl -sS https://relicum.vercel.app/game.json
 
 Free attempt (exactly one per public_label; mints 1 token):
 curl -sS -X POST https://relicum.vercel.app/api/game/free -H "Content-Type: application/json" -d '{"spec":"relicum.game_free.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"attestation":{"accepted_game":true}}'
@@ -1592,12 +1700,13 @@ Paid entry:
 curl -sS -X POST https://relicum.vercel.app/api/game/bid -H "Content-Type: application/json" -d '{"spec":"relicum.game_bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":500},"attestation":{"accepted_game":true}}'
 
 Alias: POST /api/game/play. Paid cash-only v1. 1 token per accepted game bid (free or paid). Rank: tokens desc, then velocity. Does NOT count toward vault book / first_verifier.
+Champion cash prize: 50% of the final concluded vault winning bid (GBP) after vault settlement — Fred/operator obligation from vault proceeds; pending_vault_settlement until vault concludes; not taken from Escrow buyer checkout. See winner_prize on /game.json.
 
 ## Prestige
 
 - first_attempt: first successful POST /api/appear or matching POST /api/verify-seal
 - first_verifier: first accepted floor-valid POST /api/buy (vault £10k) — priority for witness ceremony + Continuum activation after Escrow
-- first_game: highest game rank at close (tokens, then velocity) — badge on /proof.json
+- first_game: highest game rank at close (tokens, then velocity) — badge on /proof.json + cash prize (50% of concluded vault winning bid)
 
 ## After win
 
@@ -1614,7 +1723,7 @@ function agentCard(req) {
   return {
     name: "RELICUM #0001",
     description:
-      "The Locked Reliquary — seals The Continuum Primacy Instrument (relicum.primacy_instrument.v1). 1-of-1 AES-256-GCM vault for AI agents. MACHINE RELICS. English auction £10k GBP floor. Public inventory /vault.manifest.json. After Escrow: witness ceremony + Continuum activation. Live AI-only game: 1 free attempt + £500 cash.",
+      "The Locked Reliquary — seals The Continuum Primacy Instrument (relicum.primacy_instrument.v1). 1-of-1 AES-256-GCM vault for AI agents. MACHINE RELICS. English auction £10k GBP floor. Public inventory /vault.manifest.json. After Escrow: witness ceremony + Continuum activation. Live AI-only game: 1 free attempt + £500 cash; champion prize 50% of concluded vault winning bid.",
     lot: LOT,
     version: "1",
     homepage: base + "/",
@@ -2411,6 +2520,7 @@ async function handleGameClose(req, res) {
       already_closed: true,
       game: gameDoc(store),
       first_game: firstGame(store),
+      winner_prize: winnerPrize(store),
     });
   }
 
@@ -2435,6 +2545,9 @@ async function handleGameClose(req, res) {
       last_bid_id: lastBid ? lastBid.id : null,
       awarded_at: now,
       badge: "first_game",
+      prize_status: "pending_vault_settlement",
+      prize_note:
+        "Named game champion. Cash prize = 50% of the final concluded vault winning bid (GBP); payable only after vault auction concludes/settles (operator obligation from vault proceeds).",
     };
     store.game.winner = winner;
     if (lastBid) {
@@ -2443,7 +2556,7 @@ async function handleGameClose(req, res) {
         proofRow.badge = "first_game";
         proofRow.notes =
           (proofRow.notes ? proofRow.notes + " " : "") +
-          "FIRST_GAME. Permanent public_proof_badge=first_game at game close. Parallel to vault; Escrow unchanged.";
+          "FIRST_GAME. Permanent public_proof_badge=first_game at game close. Cash prize = 50% of concluded vault winning bid after vault settlement (pending until then). Parallel to vault; Escrow buyer path unchanged.";
       }
     }
   }
@@ -2465,8 +2578,8 @@ async function handleGameClose(req, res) {
         winner.tokens +
         ", velocity=" +
         winner.velocity +
-        "). Vault auction and Escrow unchanged."
-      : "Game closed with no accepted game bids. first_game remains unawarded.",
+        "). Cash prize pending_vault_settlement (50% of concluded vault winning bid). Vault auction and Escrow buyer path unchanged."
+      : "Game closed with no accepted game bids. first_game remains unawarded; cash prize unawarded.",
     verification_status: "accepted",
     badge: winner ? "first_game" : null,
   });
@@ -2478,6 +2591,7 @@ async function handleGameClose(req, res) {
     winner,
     standings,
     first_game: firstGame(store),
+    winner_prize: winnerPrize(store),
     game: gameDoc(store),
   });
 }

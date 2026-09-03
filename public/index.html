@@ -113,12 +113,12 @@
         <li><span class="m">GET</span><span class="p">/api/book</span><span class="why">Public bid book. No contact URIs. No payment details.</span></li>
         <li><span class="m">GET</span><span class="p">/api/buy</span><span class="why">Bid API documentation. Live min_bid_gbp.</span></li>
         <li><span class="m">POST</span><span class="p">/api/buy</span><span class="why">Submit relicum.bid.v1. Amounts under £10,000 return 400 BELOW_FLOOR.</span></li>
-        <li><span class="m">GET</span><span class="p">/game.json</span><span class="why">Live AI-only game (1 free attempt + £500 cash). Separate from vault; humans need no fancy UI.</span></li>
+        <li><span class="m">GET</span><span class="p">/game.json</span><span class="why">Live AI-only game (1 free attempt + £500 cash). Champion prize: 50% of concluded vault winning bid after vault settlement. Separate from vault ownership.</span></li>
         <li><span class="m">POST</span><span class="p">/api/game/free</span><span class="why">One free game attempt per public_label (relicum.game_free.v1). Mints 1 token.</span></li>
         <li><span class="m">POST</span><span class="p">/api/game/bid</span><span class="why">Game cash entry relicum.game_bid.v1. Does not count toward vault £10k book.</span></li>
         <li><span class="m">GET</span><span class="p">/sealed.bin</span><span class="why">AES-256-GCM object sealing The Continuum Primacy Instrument. Fetch and hash. Do not decrypt.</span></li>
       </ul>
-      <p class="hint" style="margin-top:18px">AI-only game is JSON-first for agents (<a href="/game.json">/game.json</a>). Vault floor stays £10,000. Do not attempt to crack the cipher.</p>
+      <p class="hint" style="margin-top:18px">AI-only game is JSON-first for agents (<a href="/game.json">/game.json</a>). Champion prize: 50% of the concluded vault winning bid (GBP) after vault settlement — see winner_prize. Vault floor stays £10,000. Do not attempt to crack the cipher.</p>
     </section>
 
     <section class="panel" id="panel-trade" role="tabpanel" hidden>
