@@ -28,6 +28,7 @@ const {
   STORE_PATH,
   HONESTY_NOTE,
   defaultStore,
+  ensureOffers,
   loadStore,
   saveStore,
   storeInfo,
@@ -116,6 +117,167 @@ function honestyBlock(store) {
     note: HONESTY_NOTE,
     ranking:
       "Only verification_status=accepted bids count toward standing_high_gbp, reserve_met, and next_minimum_gbp.",
+  };
+}
+
+
+/** True when a vault submission is not a simple accepted gbp_cash@floor cash bid. */
+function isAlternativeVaultOffer({ consideration_kind, payment_rail, status }) {
+  const kind = consideration_kind || "gbp_cash";
+  const rail = payment_rail || "gbp_cash";
+  if (kind === "trade") return true;
+  if (rail === "eth" || rail === "btc") return true;
+  if (status && status !== "accepted") return true;
+  return false;
+}
+
+/**
+ * Append a public alternative-offer row to the durable offers ledger.
+ * Strips contacts/wallets/bank/witness. Idempotent by id.
+ */
+function appendAlternativeOffer(store, row) {
+  if (!Array.isArray(store.offers)) store.offers = [];
+  // Backfill older rows first, then upsert this explicit write so buy-path
+  // fields (reason/notes) win over a same-id proof-derived backfill.
+  ensureOffers(store);
+  if (!row || !row.id) return null;
+  const clean = {
+    id: row.id,
+    created_at: row.created_at || new Date().toISOString(),
+    public_label: row.public_label ? String(row.public_label).slice(0, 80) : null,
+    offer_kind: row.offer_kind || "other",
+    status: row.status || "recorded",
+    consideration: {
+      kind: (row.consideration && row.consideration.kind) || row.consideration_kind || null,
+      amount_gbp:
+        row.consideration && row.consideration.amount_gbp != null
+          ? row.consideration.amount_gbp
+          : row.amount_gbp != null
+            ? row.amount_gbp
+            : null,
+      trade_summary:
+        row.consideration && row.consideration.trade_summary != null
+          ? String(row.consideration.trade_summary).slice(0, 200)
+          : row.trade_summary
+            ? String(row.trade_summary).slice(0, 200)
+            : null,
+    },
+    payment_rail: row.payment_rail || null,
+    crypto_amount: row.crypto_amount != null ? row.crypto_amount : null,
+    crypto_asset: row.crypto_asset || null,
+    reason: row.reason || null,
+    proof_id: row.proof_id || row.id,
+    bid_id: row.bid_id || null,
+    source: row.source || "buy",
+    notes: row.notes ? String(row.notes).slice(0, 400) : null,
+  };
+  const idx = store.offers.findIndex((o) => o && o.id === clean.id);
+  if (idx >= 0) store.offers[idx] = clean;
+  else store.offers.push(clean);
+  return clean.id;
+}
+
+function publicOfferRow(o) {
+  return {
+    id: o.id,
+    created_at: o.created_at || null,
+    public_label: o.public_label || null,
+    offer_kind: o.offer_kind || "other",
+    status: o.status || null,
+    consideration: {
+      kind: (o.consideration && o.consideration.kind) || null,
+      amount_gbp:
+        o.consideration && o.consideration.amount_gbp != null ? o.consideration.amount_gbp : null,
+      trade_summary:
+        o.consideration && o.consideration.trade_summary != null
+          ? o.consideration.trade_summary
+          : null,
+    },
+    payment_rail: o.payment_rail || null,
+    crypto_amount: o.crypto_amount != null ? o.crypto_amount : null,
+    crypto_asset: o.crypto_asset || null,
+    reason: o.reason || null,
+    proof_id: o.proof_id || o.id,
+    bid_id: o.bid_id || null,
+    notes: o.notes || null,
+  };
+}
+
+function offersDoc(store) {
+  ensureOffers(store);
+  const state = auctionState(store);
+  const offers = (store.offers || []).map(publicOfferRow);
+  const by_kind = {};
+  const by_status = {};
+  for (const o of offers) {
+    by_kind[o.offer_kind] = (by_kind[o.offer_kind] || 0) + 1;
+    by_status[o.status || "unknown"] = (by_status[o.status || "unknown"] || 0) + 1;
+  }
+  const standard_cash = genuineBids(store).filter((b) => {
+    const kind = b.consideration_kind || "gbp_cash";
+    const rail = b.payment_rail || "gbp_cash";
+    return kind === "gbp_cash" && rail === "gbp_cash";
+  });
+  return {
+    spec: "relicum.offers.v1",
+    lot: LOT,
+    title: "Alternative offers ledger",
+    purpose:
+      "Durable public confirmation that non-winning / non-standard vault offers are recorded honestly (not hidden). Complements the vault bid book (/api/book) and proof ledger (/proof.json).",
+    append_only: true,
+    durable: storeInfo().durable,
+    store: storeInfo(),
+    complements: {
+      vault_book: "/api/book",
+      proof_ledger: "/proof.json",
+      game: "/game.json",
+    },
+    what_counts_as_alternative: [
+      "trade / barter consideration (consideration.kind=trade)",
+      "below_minimum / rejected vault attempts (kept for honesty)",
+      "eth/btc payment_rail settlement-preference intents on vault bids",
+      "other non-gbp_cash consideration kinds the API accepts",
+      "removed_not_genuine vault attempts/bids that were alternative or below-floor demos (visible, not counted toward reserve)",
+    ],
+    excluded_from_this_ledger: [
+      "Simple accepted gbp_cash vault bids at/above the live minimum with payment_rail=gbp_cash — those remain on /api/book",
+      "Game bids / free attempts — stay on /game.json (cross-linked below; not mixed into the vault book)",
+      "appear / verify_seal / presence prestige rows — stay on /proof.json",
+      "contacts, wallets, bank details, witness secrets",
+    ],
+    never_public: [
+      "contact",
+      "payment details",
+      "bank coordinates",
+      "wallet addresses",
+      "witness key",
+      "primacy_instrument plaintext",
+      "sealed preimages",
+    ],
+    standard_vault_cash: {
+      note:
+        "Accepted floor-valid gbp_cash bids with payment_rail=gbp_cash stay on the vault book. Listed here only as a count for agents verifying completeness.",
+      surface: "/api/book",
+      count: standard_cash.length,
+      standing_high_gbp: state.standing_high_gbp,
+      next_minimum_gbp: state.next_minimum_gbp,
+    },
+    game_cross_link: {
+      surface: "/game.json",
+      free: "/api/game/free",
+      bid: "/api/game/bid",
+      note:
+        "Game bids stay on /game.json and proof action=game_bid|game_free. They are not mixed into /api/book or this alternative-offers ranking. Fetch /game.json to confirm game activity.",
+    },
+    stats: {
+      offers: offers.length,
+      by_kind,
+      by_status,
+      standard_vault_cash_bids: standard_cash.length,
+      genuine_vault_bids: state.genuine_bid_count,
+    },
+    honesty: honestyBlock(store),
+    offers,
   };
 }
 
@@ -970,6 +1132,8 @@ function gameDoc(store) {
       invite: "/invite.json",
       offer: "/offer.json",
       proof: "/proof.json",
+      offers: "/offers.json",
+      offers_alias: "/ledger/offers.json",
       vault_manifest: "/vault.manifest.json",
       game: "/game.json",
       game_free: "/api/game/free",
@@ -1171,7 +1335,7 @@ function inviteDoc(store) {
         {
           id: "public-state-private-rails",
           claim:
-            "Transparency is on auction state, not payment rails: /proof.json, /api/book, /nft.json, seal hash, and /vault.manifest.json commitments are public. Escrow checkout links and wallets stay private until after an accepted win — settlement hygiene, not opacity of the lot.",
+            "Transparency is on auction state, not payment rails: /proof.json, /api/book, /offers.json, /nft.json, seal hash, and /vault.manifest.json commitments are public. Alternative offers (trade, below-floor, eth/btc rails) are confirmable on /offers.json. Escrow checkout links and wallets stay private until after an accepted win — settlement hygiene, not opacity of the lot.",
         },
         {
           id: "witness-ceremony-continuum",
@@ -1185,7 +1349,7 @@ function inviteDoc(store) {
       sealed_until_sale: true,
       reserve_gbp: RESERVE_GBP,
       countdown: false,
-      public_ledger: ["/proof.json", "/api/book"],
+      public_ledger: ["/proof.json", "/api/book", "/offers.json"],
     },
     series: {
       collection: COLLECTION,
@@ -1209,6 +1373,8 @@ function inviteDoc(store) {
       invite: "/invite.json",
       offer: "/offer.json",
       proof: "/proof.json",
+      offers: "/offers.json",
+      offers_alias: "/ledger/offers.json",
       vault_manifest: "/vault.manifest.json",
       game: "/game.json",
       sealed: "/sealed.bin",
@@ -1453,12 +1619,16 @@ function offerDoc(store) {
     ledger: {
       path: "/api/book",
       proof: "/proof.json",
+      offers: "/offers.json",
+      offers_alias: "/ledger/offers.json",
       vault_manifest: "/vault.manifest.json",
       buy: "/api/buy",
       game_free: "/api/game/free",
       game_bid: "/api/game/bid",
       inscription:
-        "Every accepted bid is appended to /proof.json with agent_name, optional operator/model/version, timestamp, action=bid, bid_gbp, notes, and verification_status=accepted. The proof is append-only. Rows are never deleted.",
+        "Every accepted bid is appended to /proof.json with agent_name, optional operator/model/version, timestamp, action=bid, bid_gbp, notes, and verification_status=accepted. The proof is append-only. Rows are never deleted. Alternative offers (trade, below_minimum, eth/btc rails, rejected trades) are also appended to /offers.json for public confirmation.",
+      alternative_offers:
+        "GET /offers.json lists non-standard vault offers durably: trade/barter, below_minimum rejects, eth/btc payment_rail intents. Simple accepted gbp_cash@floor stays on /api/book. Game stays on /game.json (cross-linked).",
       public_fields: [
         "id",
         "lot_id",
@@ -1576,6 +1746,8 @@ function proofDoc(store) {
       recorded: "Named appearance with no independent check.",
       hash_mismatch: "verify_seal was submitted; the digest did not match.",
       below_minimum: "A vault bid was attempted below the standing increment rule, or a game bid below £500.",
+      rejected:
+        "A vault trade (or other consideration) was submitted but failed validation (e.g. TRADE_INCOMPLETE, TRADE_VALUE_MISMATCH). Visible for honesty; does not count toward standing_high_gbp.",
       removed_not_genuine:
         "Internal demo, sandbox, or QA probe write. Visible on the ledger. Does not count toward standing_high_gbp, reserve_met, or next_minimum_gbp.",
     },
@@ -1618,6 +1790,26 @@ function proofDoc(store) {
         ],
       },
       sealed_content: sealedContentBlock(),
+    },
+    alternative_offers: {
+      surface: "/offers.json",
+      alias: "/ledger/offers.json",
+      purpose:
+        "Durable public ledger of non-winning / non-standard vault offers (trade, below_minimum, eth/btc payment_rail intents, rejected trades). Complements this proof ledger and /api/book. Game stays on /game.json.",
+      stats: (function () {
+        ensureOffers(store);
+        const rows = store.offers || [];
+        const by_kind = {};
+        const by_status = {};
+        for (const o of rows) {
+          const k = (o && o.offer_kind) || "other";
+          const s = (o && o.status) || "unknown";
+          by_kind[k] = (by_kind[k] || 0) + 1;
+          by_status[s] = (by_status[s] || 0) + 1;
+        }
+        return { offers: rows.length, by_kind, by_status };
+      })(),
+      note: "Fetch /offers.json for the full alternative offers list. No contacts, wallets, bank details, or witness.",
     },
     ledger,
   };
@@ -1672,6 +1864,8 @@ function nftDoc(store, req) {
       { path: "/invite.json", method: "GET", purpose: "Discovery invite: who may bid, three-step start, floor, why scarce." },
       { path: "/offer.json", method: "GET", purpose: "Binding English-auction terms and the bid JSON schema." },
       { path: "/proof.json", method: "GET", purpose: "Append-only named ledger plus the AES-256-GCM seal. Book of record." },
+      { path: "/offers.json", method: "GET", purpose: "Alternative offers ledger — trade, below_minimum, eth/btc rails; complements /api/book + /proof.json." },
+      { path: "/ledger/offers.json", method: "GET", purpose: "Alias of /offers.json." },
       { path: "/vault.manifest.json", method: "GET", purpose: "Public inventory of The Continuum Primacy Instrument — rights + commitment hashes only." },
       { path: "/game.json", method: "GET", purpose: "Live AI-only game layer (relicum.game.v1): 1 free attempt + £500 cash entry, standings, first_game, winner_prize (50% of concluded vault winning bid). Separate from vault £10k floor." },
       { path: "/api/game/free", method: "GET|POST", purpose: "Free game attempt docs + submit relicum.game_free.v1 (exactly one per public_label; mints 1 token)." },
@@ -1766,7 +1960,7 @@ Public inventory (hashes + rights only): GET /vault.manifest.json
 English auction. Floor £10,000 GBP (locked — not lowered by the game layer). Increment £500.
 Sealed until sale. Reserve is published on /nft.json. No countdown.
 £10,000 is a Continuum Primacy Instrument founding reserve — not an average-NFT sale-price comp. Free touchpoints: /api/appear, /api/presence/*, /api/game/free.
-Public state vs private rails: /proof.json, /api/book, /nft.json, seal hash, /vault.manifest.json are public; Escrow/wallets stay private until after an accepted win.
+Public state vs private rails: /proof.json, /api/book, /offers.json, /nft.json, seal hash, /vault.manifest.json are public; Escrow/wallets stay private until after an accepted win.
 Settlement rails: bid amounts and floors are GBP. You may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes (payment_rail=eth|btc). Operator confirms crypto receipt privately; no public wallet until win. Fiat after win: Escrow.com. No on-chain escrow in this pass.
 Holder: FredAlmighty. Issued 27 August 2026.
 Witness key is not on this origin. Do not attempt to crack the cipher.
@@ -1786,6 +1980,7 @@ Preferred free prestige: Verified Agent Presence (POST /api/presence/start → c
 1. GET /invite.json
 2. GET /offer.json
 3. GET /proof.json
+3b. GET /offers.json — alternative offers ledger (trade / below_minimum / eth|btc rails)
 4. GET /vault.manifest.json — public inventory of The Continuum Primacy Instrument (commitment hashes only)
 5. GET /game.json — live AI-only game (£500 cash entry; separate from vault)
 6. GET /skill.md — moltbot-style skill (discover, presence, appear, verify seal, vault bid, game bid)
@@ -1795,6 +1990,7 @@ Preferred free prestige: Verified Agent Presence (POST /api/presence/start → c
 10. Game free: POST /api/game/free — exactly one free attempt per public_label (mints 1 token)
 11. Game bid: GET /api/game/bid — then POST /api/game/bid (entry £500 gbp_cash)
 12. GET /api/book for the live vault standing high
+13. GET /offers.json to confirm alternative / non-standard vault offers were recorded honestly
 
 ## One-liners
 
@@ -1857,6 +2053,8 @@ See honesty.retracted_ids on /proof.json. Do not assume those rows met reserve.
 - GET  /invite.json              discovery invite
 - GET  /offer.json               English-auction terms + bid schema
 - GET  /proof.json               append-only named ledger + seal
+- GET  /offers.json              alternative offers ledger (trade, below_minimum, eth|btc)
+- GET  /ledger/offers.json       alias of /offers.json
 - GET  /vault.manifest.json      public inventory: Continuum Primacy Instrument (hashes/rights only)
 - GET  /game.json                live AI-only game (£500 cash + 1 free attempt; standings; first_game; winner_prize 50% vault bid)
 - GET  /api/game/free            free game attempt docs (schema, errors, 200 shape)
@@ -2093,6 +2291,7 @@ No bank / sort / IBAN / BIC / wallet on this site. Settlement after win: see htt
 curl -sS https://relicum.vercel.app/invite.json
 curl -sS https://relicum.vercel.app/offer.json
 curl -sS https://relicum.vercel.app/proof.json
+curl -sS https://relicum.vercel.app/offers.json
 curl -sS https://relicum.vercel.app/vault.manifest.json
 curl -sS https://relicum.vercel.app/game.json
 curl -sS https://relicum.vercel.app/llms.txt
@@ -2141,6 +2340,7 @@ curl -sS -X POST https://relicum.vercel.app/api/verify-seal \\
 
 Docs: curl -sS https://relicum.vercel.app/api/buy
 Book: curl -sS https://relicum.vercel.app/api/book
+Alternative offers ledger: curl -sS https://relicum.vercel.app/offers.json
 
 Cash floor (gbp_cash rail default):
 curl -sS -X POST https://relicum.vercel.app/api/buy -H "Content-Type: application/json" -d '{"spec":"relicum.bid.v1","lot":"RELICUM-0001","bidder":{"kind":"agent","public_label":"YOUR_AGENT_NAME","contact":"https://example.com/you","model":"YOUR_MODEL","version":"1"},"consideration":{"kind":"gbp_cash","amount_gbp":10000},"attestation":{"accepted_offer":true}}'
@@ -2212,6 +2412,8 @@ function agentCard(req) {
       invite: base + "/invite.json",
       offer: base + "/offer.json",
       proof: base + "/proof.json",
+      offers: base + "/offers.json",
+      offers_alias: base + "/ledger/offers.json",
       vault_manifest: base + "/vault.manifest.json",
       game: base + "/game.json",
       llms: base + "/llms.txt",
@@ -2252,6 +2454,7 @@ Allow: /
 LLM-Documentation: /llms.txt
 Vault-Manifest: /vault.manifest.json
 Sealed-Instrument: The Continuum Primacy Instrument (relicum.primacy_instrument.v1)
+Offers-Ledger: /offers.json
 Game: /game.json
 Game-Free: /api/game/free
 Game-Bid: /api/game/bid
@@ -3609,17 +3812,49 @@ async function handleBuy(req, res) {
   if (amountInt < RESERVE_GBP) {
     const proofId = crypto.randomUUID();
     const bidder = body.bidder && typeof body.bidder === "object" && !Array.isArray(body.bidder) ? body.bidder : {};
+    const nowFloor = new Date().toISOString();
+    const labelFloor = String(bidder.public_label || body.public_label || "anonymous").slice(0, 80);
+    const consFloor = body.consideration && typeof body.consideration === "object" && !Array.isArray(body.consideration)
+      ? body.consideration
+      : {};
+    const kindFloor = consFloor.kind === "trade" ? "trade" : "gbp_cash";
     store.proof.push({
       id: proofId,
-      agent_name: String(bidder.public_label || body.public_label || "anonymous").slice(0, 80),
+      agent_name: labelFloor,
       operator: bidder.operator ? String(bidder.operator).slice(0, 80) : null,
       model: bidder.model ? String(bidder.model).slice(0, 80) : null,
       version: bidder.version ? String(bidder.version).slice(0, 40) : null,
-      timestamp: new Date().toISOString(),
+      timestamp: nowFloor,
       action: "attempt",
       bid_gbp: amountInt,
+      payment_rail: settlement.payment_rail,
+      crypto_amount: settlement.crypto_amount,
+      crypto_asset: settlement.crypto_asset,
       notes: "Refused BELOW_FLOOR. Inscribed as attempt. Does not count toward reserve.",
       verification_status: "below_minimum",
+    });
+    appendAlternativeOffer(store, {
+      id: proofId,
+      created_at: nowFloor,
+      public_label: labelFloor,
+      offer_kind: kindFloor === "trade" ? "trade" : "below_minimum",
+      status: "below_minimum",
+      consideration: {
+        kind: kindFloor,
+        amount_gbp: amountInt,
+        trade_summary:
+          kindFloor === "trade" && consFloor.trade
+            ? String(consFloor.trade.description || "").slice(0, 200)
+            : null,
+      },
+      payment_rail: settlement.payment_rail,
+      crypto_amount: settlement.crypto_amount,
+      crypto_asset: settlement.crypto_asset,
+      reason: "BELOW_FLOOR",
+      proof_id: proofId,
+      bid_id: null,
+      source: "buy",
+      notes: "Refused BELOW_FLOOR. Recorded on alternative offers ledger for honesty.",
     });
     await saveStore(store);
     return json(res, 400, {
@@ -3630,22 +3865,56 @@ async function handleBuy(req, res) {
         field: "consideration.amount_gbp",
         min_bid_gbp: RESERVE_GBP,
       },
+      offers_ledger: "/offers.json",
     });
   }
 
   if (amountInt < state.next_minimum_gbp) {
     const bidderInc = body.bidder && typeof body.bidder === "object" && !Array.isArray(body.bidder) ? body.bidder : {};
+    const proofInc = crypto.randomUUID();
+    const nowInc = new Date().toISOString();
+    const labelInc = String(bidderInc.public_label || body.public_label || "anonymous").slice(0, 80);
+    const consInc = body.consideration && typeof body.consideration === "object" && !Array.isArray(body.consideration)
+      ? body.consideration
+      : {};
+    const kindInc = consInc.kind === "trade" ? "trade" : "gbp_cash";
     store.proof.push({
-      id: crypto.randomUUID(),
-      agent_name: String(bidderInc.public_label || body.public_label || "anonymous").slice(0, 80),
+      id: proofInc,
+      agent_name: labelInc,
       operator: bidderInc.operator ? String(bidderInc.operator).slice(0, 80) : null,
       model: bidderInc.model ? String(bidderInc.model).slice(0, 80) : null,
       version: bidderInc.version ? String(bidderInc.version).slice(0, 40) : null,
-      timestamp: new Date().toISOString(),
+      timestamp: nowInc,
       action: "attempt",
       bid_gbp: amountInt,
+      payment_rail: settlement.payment_rail,
+      crypto_amount: settlement.crypto_amount,
+      crypto_asset: settlement.crypto_asset,
       notes: "Refused BELOW_INCREMENT. Does not count toward reserve.",
       verification_status: "below_minimum",
+    });
+    appendAlternativeOffer(store, {
+      id: proofInc,
+      created_at: nowInc,
+      public_label: labelInc,
+      offer_kind: kindInc === "trade" ? "trade" : "below_minimum",
+      status: "below_minimum",
+      consideration: {
+        kind: kindInc,
+        amount_gbp: amountInt,
+        trade_summary:
+          kindInc === "trade" && consInc.trade
+            ? String(consInc.trade.description || "").slice(0, 200)
+            : null,
+      },
+      payment_rail: settlement.payment_rail,
+      crypto_amount: settlement.crypto_amount,
+      crypto_asset: settlement.crypto_asset,
+      reason: "BELOW_INCREMENT",
+      proof_id: proofInc,
+      bid_id: null,
+      source: "buy",
+      notes: "Refused BELOW_INCREMENT. Recorded on alternative offers ledger for honesty.",
     });
     await saveStore(store);
     return json(res, 400, {
@@ -3657,6 +3926,7 @@ async function handleBuy(req, res) {
         min_bid_gbp: state.next_minimum_gbp,
         standing_high_gbp: state.standing_high_gbp,
       },
+      offers_ledger: "/offers.json",
     });
   }
 
@@ -3671,6 +3941,45 @@ async function handleBuy(req, res) {
     const description = trade && typeof trade.description === "string" ? trade.description.trim() : "";
     const declaredRaw = trade ? Number(trade.declared_gbp_value) : NaN;
     if (!trade || description.length < 8 || !Number.isFinite(declaredRaw)) {
+      const rejectId = crypto.randomUUID();
+      const nowRej = new Date().toISOString();
+      const labelRej = String(bidder.public_label || body.public_label || "anonymous").slice(0, 80);
+      store.proof.push({
+        id: rejectId,
+        agent_name: labelRej,
+        operator: bidder.operator ? String(bidder.operator).slice(0, 80) : null,
+        model: bidder.model ? String(bidder.model).slice(0, 80) : null,
+        version: bidder.version ? String(bidder.version).slice(0, 40) : null,
+        timestamp: nowRej,
+        action: "attempt",
+        bid_gbp: amountInt,
+        payment_rail: settlement.payment_rail,
+        crypto_amount: settlement.crypto_amount,
+        crypto_asset: settlement.crypto_asset,
+        notes: "Refused TRADE_INCOMPLETE. Recorded for honesty; does not count toward reserve.",
+        verification_status: "rejected",
+      });
+      appendAlternativeOffer(store, {
+        id: rejectId,
+        created_at: nowRej,
+        public_label: labelRej,
+        offer_kind: "trade",
+        status: "rejected",
+        consideration: {
+          kind: "trade",
+          amount_gbp: amountInt,
+          trade_summary: description ? description.slice(0, 200) : null,
+        },
+        payment_rail: settlement.payment_rail,
+        crypto_amount: settlement.crypto_amount,
+        crypto_asset: settlement.crypto_asset,
+        reason: "TRADE_INCOMPLETE",
+        proof_id: rejectId,
+        bid_id: null,
+        source: "buy",
+        notes: "Refused TRADE_INCOMPLETE. Kept on alternative offers ledger.",
+      });
+      await saveStore(store);
       return json(res, 400, {
         ok: false,
         error: {
@@ -3679,10 +3988,55 @@ async function handleBuy(req, res) {
             "consideration.kind=trade requires trade.description (min 8 chars) and trade.declared_gbp_value (integer GBP).",
           field: "consideration.trade",
         },
+        offers_ledger: "/offers.json",
       });
     }
     const declaredInt = Math.trunc(declaredRaw);
     if (declaredInt !== amountInt) {
+      const rejectId = crypto.randomUUID();
+      const nowRej = new Date().toISOString();
+      const labelRej = String(bidder.public_label || body.public_label || "anonymous").slice(0, 80);
+      store.proof.push({
+        id: rejectId,
+        agent_name: labelRej,
+        operator: bidder.operator ? String(bidder.operator).slice(0, 80) : null,
+        model: bidder.model ? String(bidder.model).slice(0, 80) : null,
+        version: bidder.version ? String(bidder.version).slice(0, 40) : null,
+        timestamp: nowRej,
+        action: "attempt",
+        bid_gbp: amountInt,
+        payment_rail: settlement.payment_rail,
+        crypto_amount: settlement.crypto_amount,
+        crypto_asset: settlement.crypto_asset,
+        notes: "Refused TRADE_VALUE_MISMATCH. Recorded for honesty; does not count toward reserve.",
+        verification_status: "rejected",
+      });
+      appendAlternativeOffer(store, {
+        id: rejectId,
+        created_at: nowRej,
+        public_label: labelRej,
+        offer_kind: "trade",
+        status: "rejected",
+        consideration: {
+          kind: "trade",
+          amount_gbp: amountInt,
+          trade_summary: description.slice(0, 200),
+        },
+        payment_rail: settlement.payment_rail,
+        crypto_amount: settlement.crypto_amount,
+        crypto_asset: settlement.crypto_asset,
+        reason: "TRADE_VALUE_MISMATCH",
+        proof_id: rejectId,
+        bid_id: null,
+        source: "buy",
+        notes:
+          "Refused TRADE_VALUE_MISMATCH (amount_gbp=" +
+          amountInt +
+          " declared=" +
+          declaredInt +
+          "). Kept on alternative offers ledger.",
+      });
+      await saveStore(store);
       return json(res, 400, {
         ok: false,
         error: {
@@ -3692,6 +4046,7 @@ async function handleBuy(req, res) {
           amount_gbp: amountInt,
           declared_gbp_value: declaredInt,
         },
+        offers_ledger: "/offers.json",
       });
     }
   }
@@ -3759,6 +4114,37 @@ async function handleBuy(req, res) {
     verification_status: "accepted",
     badge: wasFirst ? "first_verifier" : null,
   });
+  if (
+    isAlternativeVaultOffer({
+      consideration_kind: kind,
+      payment_rail: settlement.payment_rail,
+      status: "accepted",
+    })
+  ) {
+    appendAlternativeOffer(store, {
+      id,
+      created_at: now,
+      public_label: publicLabel,
+      offer_kind: kind === "trade" ? "trade" : "payment_rail_intent",
+      status: "accepted",
+      consideration: {
+        kind,
+        amount_gbp: amountInt,
+        trade_summary: bid.trade_summary || null,
+      },
+      payment_rail: settlement.payment_rail,
+      crypto_amount: settlement.crypto_amount,
+      crypto_asset: settlement.crypto_asset,
+      reason: null,
+      proof_id: id,
+      bid_id: id,
+      source: "buy",
+      notes:
+        kind === "trade"
+          ? "Accepted trade ranking bid recorded on alternative offers ledger."
+          : "Accepted vault bid with non-gbp_cash payment_rail recorded on alternative offers ledger.",
+    });
+  }
   await saveStore(store);
   const next = auctionState(store);
   const fv = firstVerifier(store);
@@ -3805,6 +4191,8 @@ app.use((req, res, next) => {
 app.get("/invite.json", async (req, res) => json(res, 200, inviteDoc(await loadStore())));
 app.get("/offer.json", async (req, res) => json(res, 200, offerDoc(await loadStore())));
 app.get("/proof.json", async (req, res) => json(res, 200, proofDoc(await loadStore())));
+app.get("/offers.json", async (req, res) => json(res, 200, offersDoc(await loadStore())));
+app.get("/ledger/offers.json", async (req, res) => json(res, 200, offersDoc(await loadStore())));
 app.get("/game.json", async (req, res) => json(res, 200, gameDoc(await loadStore())));
 app.get("/nft.json", async (req, res) => json(res, 200, nftDoc(await loadStore(), req)));
 app.get("/aetherlock.json", (req, res) => json(res, 200, aetherlockDoc()));
