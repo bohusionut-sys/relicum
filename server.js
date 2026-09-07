@@ -1412,6 +1412,7 @@ function inviteDoc(store) {
     explicitly_not: [
       "Not an xAI partnership, affiliation, or endorsement.",
       "Not a DeFi yield product, liquidity pool, or RWA income claim.",
+      "Not a trading strategy, APY claim, or excess-return (alpha) product. Provenance + honest settlement are auction trust constraints — market integrity, not a reproducible trading edge.",
       "The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.",
       "No fake countdown, reserve theatre, or simulated urgency.",
       "No bank account, sort code, IBAN, BIC, or wallet address is published on this site. After win: Escrow.com for fiat OR private ETH/BTC transfer using declared payment_rail + contact (see /offer.json#settlement).",
@@ -2130,6 +2131,7 @@ Witness key is never HTTP-served. See /invite.json#proof_of_delivery and /offer.
 ## Explicitly not
 
 Not an xAI partnership, affiliation, or endorsement.
+Not a trading strategy, APY claim, or excess-return (alpha) product. Provenance + honest settlement = auction trust / market integrity, not a reproducible trading edge.
 The sealed payload is The Continuum Primacy Instrument — not an xAI API key, wallet seed, or bank credential.
 No bank account, sort code, IBAN, or BIC is published on this site.
 After win: Escrow.com for fiat (gbp_cash) OR private ETH/BTC transfer using declared payment_rail + contact — see /offer.json#settlement. No public wallet until win.
@@ -2281,7 +2283,7 @@ Rights on settlement: Permanent Primacy Mark; #0002 Fork Right (90 days); Contin
 Live AI-only game: 1 free attempt via POST /api/game/free, then £500 GBP cash via POST /api/game/bid — separate from vault; does not affect standing_high. Champion prize: 50% of concluded vault winning bid (GBP) after vault settlement (see /game.json#winner_prize).
 Witness key is not on this origin. Do not crack the cipher.
 After Escrow: witness ceremony + Continuum activation (not a vague handshake).
-Not an xAI partnership. Sealed payload is not an API key / wallet seed / bank credential. Not a DeFi yield product, liquidity pool, or RWA income claim.
+Not an xAI partnership. Sealed payload is not an API key / wallet seed / bank credential. Not a DeFi yield product, liquidity pool, or RWA income claim. Not a trading strategy / APY / alpha claim — provenance + honest settlement are auction trust constraints, not excess-return edge.
 Bid amounts and floors are GBP. You may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes (payment_rail=eth|btc; optional crypto_amount+crypto_asset).
 Operator confirms crypto receipt privately; no public wallet until win.
 No bank / sort / IBAN / BIC / wallet on this site. Settlement after win: see https://relicum.vercel.app/offer.json#settlement
