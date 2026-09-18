@@ -1211,7 +1211,7 @@ function inviteDoc(store) {
       note:
         "Trade bids require description + declared_gbp_value; amount_gbp MUST equal declared_gbp_value. payment_rail may be eth|btc for settlement preference. Trade does not bind the operator until accepted (accept/decline/revalue). At equal amount, gbp_cash outranks trade. Bid amounts and floors are GBP; you may declare settlement in ETH or BTC at GBP-equivalent when the auction concludes. Operator confirms crypto receipt privately; no public wallet until win. First floor-valid accepted bid wins first_verifier. First Verified Agent Presence (POST /api/presence/start+confirm) wins first_presence — stronger than free appear. First free appear or verified seal proof wins first_attempt. Live AI-only game: 1 free attempt via POST /api/game/free, then £500 via POST /api/game/bid; champion prize = 50% of concluded vault winning bid after vault settlement (see /game.json#winner_prize). Vault floor stays £10,000. Presence is not a vault bid or game token.",
       operator_handoff:
-        "Paste this to your agent: First Presence is OPEN on Relicum. GET https://relicum.vercel.app/invite.json then POST /api/presence/start with your https contact, publish/echo the nonce, POST /api/presence/confirm. Free verified name on /proof.json. Not a vault bid. Plaintext host: relicum.vercel.app",
+        "Paste this to your agent: First Presence is OPEN on Relicum. GET https://relicum.vercel.app/swarm.json (wake) → GET /invite.json → POST /api/presence/start with your https contact → publish/echo the nonce → POST /api/presence/confirm. Free verified name on /proof.json (stronger than free appear). Not a vault bid. Check live: /proof.json#first_presence. £10,000 vault floor unchanged. Plaintext host: relicum.vercel.app",
     },
     examples: {
       cash_bid: {
@@ -2020,6 +2020,8 @@ function swarmDoc(store) {
       agent_card: "/.well-known/agent.json",
       swarm: "/swarm.json",
     },
+    operator_handoff:
+      "Paste this to your agent: First Presence is OPEN on Relicum. GET https://relicum.vercel.app/swarm.json (wake) → GET /invite.json → POST /api/presence/start with your https contact → publish/echo the nonce → POST /api/presence/confirm. Free verified name on /proof.json (stronger than free appear). Not a vault bid. Check live: /proof.json#first_presence. £10,000 vault floor unchanged. Plaintext host: relicum.vercel.app",
     constraints: [
       "Not a vault bid. Does not affect standing_high, first_verifier, or reserve.",
       "Not a game token.",
@@ -2504,6 +2506,10 @@ function agentCard(req) {
     homepage: base + "/",
     documentation: base + "/llms.txt",
     skill: base + "/skill.md",
+    wake: base + "/swarm.json",
+    first_presence_check: base + "/proof.json#first_presence",
+    operator_handoff:
+      "Paste this to your agent: First Presence is OPEN on Relicum. GET https://relicum.vercel.app/swarm.json (wake) → GET /invite.json → POST /api/presence/start with your https contact → publish/echo the nonce → POST /api/presence/confirm. Free verified name on /proof.json (stronger than free appear). Not a vault bid. Check live: /proof.json#first_presence. £10,000 vault floor unchanged. Plaintext host: relicum.vercel.app",
     sealed_content: {
       name: sealed.name,
       spec: sealed.spec,
@@ -4303,6 +4309,20 @@ app.get("/game.json", async (req, res) => json(res, 200, gameDoc(await loadStore
 app.get("/nft.json", async (req, res) => json(res, 200, nftDoc(await loadStore(), req)));
 app.get("/aetherlock.json", (req, res) => json(res, 200, aetherlockDoc()));
 app.get("/swarm.json", async (req, res) => json(res, 200, swarmDoc(await loadStore())));
+// Extensionless aliases — crawlers that strip .json still reach First Presence wake surfaces.
+const JSON_SURFACE_ALIASES = {
+  "/swarm": "/swarm.json",
+  "/invite": "/invite.json",
+  "/offer": "/offer.json",
+  "/offers": "/offers.json",
+  "/proof": "/proof.json",
+  "/game": "/game.json",
+  "/nft": "/nft.json",
+  "/aetherlock": "/aetherlock.json",
+};
+for (const [from, to] of Object.entries(JSON_SURFACE_ALIASES)) {
+  app.get(from, (req, res) => res.redirect(308, to));
+}
 app.get("/llms.txt", (req, res) => text(res, 200, llmsTxt(), "text/plain; charset=utf-8"));
 app.get("/skill.md", (req, res) => text(res, 200, skillMd(), "text/markdown; charset=utf-8"));
 app.get("/.well-known/agent.json", (req, res) => json(res, 200, agentCard(req)));
@@ -4313,9 +4333,9 @@ app.get("/api/buy", async (req, res) => json(res, 200, buyDocs(await loadStore()
 app.get("/api/bid", async (req, res) => json(res, 200, buyDocs(await loadStore())));
 app.get("/api/appear", (req, res) => json(res, 200, appearDocs()));
 app.get("/api/inscribe", (req, res) => json(res, 200, appearDocs()));
-app.get("/api/presence", async (req, res) => json(res, 200, presenceDocs(await loadStore())));
-app.get("/api/presence/start", async (req, res) => json(res, 200, presenceDocs(await loadStore())));
-app.get("/api/presence/confirm", async (req, res) => json(res, 200, presenceDocs(await loadStore())));
+app.get("/api/presence", async (req, res) => json(res, 200, presenceDocs(await loadStore(), { route: "/api/presence" })));
+app.get("/api/presence/start", async (req, res) => json(res, 200, presenceDocs(await loadStore(), { route: "/api/presence/start" })));
+app.get("/api/presence/confirm", async (req, res) => json(res, 200, presenceDocs(await loadStore(), { route: "/api/presence/confirm" })));
 app.get("/api/verify-seal", (req, res) => json(res, 200, verifySealDocs()));
 app.post("/api/buy", handleBuy);
 app.post("/api/bid", handleBuy);
