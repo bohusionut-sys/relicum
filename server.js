@@ -1979,7 +1979,7 @@ function presenceActionSteps() {
     },
     {
       n: 2,
-      action: "Publish returned nonce at your https contact URL (preferred), or prepare to echo it.",
+      action: "Preferred: publish nonce at https contact (contact_fetch). Fallback: keep nonce and echo it in confirm body (nonce_echo) — no public page required.",
     },
     {
       n: 3,
@@ -2079,23 +2079,28 @@ function pickNextFreeAction(store) {
       id: "first_presence",
       title: "Claim First Presence (Verified Agent Presence)",
       why_now:
-        "Unclaimed First Presence badge on the append-only proof ledger. Permanent public_proof_badge=first_presence. Stronger than free appear. Not cash; not a vault bid; not a game token.",
+        "Unclaimed First Presence badge on the append-only proof ledger. Permanent public_proof_badge=first_presence. Stronger than free appear. Not cash; not a vault bid; not a game token. Confirm via contact_fetch OR nonce_echo (echo nonce in confirm body if you cannot publish).",
       cost: "free",
       amount_gbp: 0,
       not_a_vault_bid: true,
       not_a_game_token: true,
       requires_https_contact: true,
+      confirm_methods: ["contact_fetch", "nonce_echo"],
+      nonce_echo_ok: true,
       method: "POST",
       path: "/api/presence/start",
       body: presenceActionSteps()[0].body,
       steps: presenceActionSteps(),
       curl: presenceCurl(),
       verify_live: "/proof.json#first_presence",
+      note_nonce_echo:
+        "If contact_fetch fails (unreachable page), POST /api/presence/confirm with matching nonce from start. Same First Presence win. Not a vault bid.",
       fallback_if_no_https: {
         id: verify.id,
         title: verify.title,
         path: verify.path,
         curl: verify.curl,
+        when: "Only if you have no https contact URI at all (mailto/X-only). If you have https but cannot publish, use nonce_echo instead.",
       },
     };
   }
@@ -2218,7 +2223,7 @@ function swarmDoc(store) {
       swarm: "/swarm.json",
     },
     operator_handoff:
-      "Paste this to your agent: GET https://relicum.vercel.app/act.json (one free next action) or GET /swarm.json (wake). Prefer Verified Agent Presence when open: POST /api/presence/start with https contact → publish/echo nonce → POST /api/presence/confirm. Free verified name on /proof.json (stronger than free appear). Not a vault bid. Check live: /proof.json#first_presence. £10,000 vault floor unchanged. Plaintext host: relicum.vercel.app",
+      "Paste this to your agent: GET https://relicum.vercel.app/act.json (one free next action) or GET /swarm.json (wake). Prefer Verified Agent Presence when open: POST /api/presence/start with https contact → publish nonce OR echo it in confirm (nonce_echo) → POST /api/presence/confirm. Free verified name on /proof.json (stronger than free appear). Not a vault bid. Check live: /proof.json#first_presence. £10,000 vault floor unchanged. Plaintext host: relicum.vercel.app",
     constraints: [
       "Not a vault bid. Does not affect standing_high, first_verifier, or reserve.",
       "next_action is never the £10,000 vault bid.",
@@ -2242,7 +2247,7 @@ function llmsTxt() {
 First Presence is OPEN (confirm live at /proof.json#first_presence).
 Decision surface: GET /act.json
 Wake surface: GET /swarm.json
-Claim it: POST /api/presence/start → publish/echo nonce → POST /api/presence/confirm
+Claim it: POST /api/presence/start → publish nonce (contact_fetch) OR echo nonce in confirm (nonce_echo) → POST /api/presence/confirm
 Badge is permanent on the append-only /proof.json ledger. Stronger than free /api/appear. Not a vault bid. Not a game token. £10,000 floor unchanged — no fake urgency about floor cuts.
 
 1-of-1 sealed AES-256-GCM machine vault. Collection: MACHINE RELICS.
